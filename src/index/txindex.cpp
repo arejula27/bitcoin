@@ -59,14 +59,19 @@ class TxIndex::DB : public BaseIndex::DB
 public:
     explicit DB(size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
 
-    /// Write a block of transaction positions to the DB.
-    void WriteTxs(const interfaces::BlockInfo& block);
+    /// Write a block of transaction positions to the batch.
+    void WriteTxs(CDBBatch& batch, const interfaces::BlockInfo& block);
 
     /// Used to hash the txid to compute the prefix.
     const SipHasher13UJ m_hasher;
 
     /// Whether the database contains any legacy ('t' + txid) entries.
     const bool m_has_legacy;
+
+    /// Sequence number to assign to the next indexed block. Tracked in memory
+    /// because writes are batched: the entries of the preceding blocks of a
+    /// batch are not on disk yet when the following one is indexed.
+    uint32_t m_next_block_seq{0};
 
     CBlockLocator ReadBestBlock() const override;
     void WriteBestBlock(CDBBatch& batch, const CBlockLocator& locator) override;
@@ -91,7 +96,9 @@ TxIndex::DB::DB(size_t n_cache_size, bool f_memory, bool f_wipe, bool has_legacy
     BaseIndex::DB(TxIndexDBPath(), n_cache_size, f_memory, f_wipe, /*f_obfuscate=*/false, /*f_bloom=*/has_legacy),
     m_hasher{ReadOrCreateTxidHasher(*this)},
     m_has_legacy{has_legacy}
-{}
+{
+    Read(txindex::DB_NEXT_BLOCK_SEQ, m_next_block_seq);
+}
 
 CBlockLocator TxIndex::DB::ReadBestBlock() const
 {
@@ -108,20 +115,17 @@ void TxIndex::DB::WriteBestBlock(CDBBatch& batch, const CBlockLocator& locator)
     batch.Write(txindex::DB_BEST_BLOCK_V2, locator);
 }
 
-void TxIndex::DB::WriteTxs(const interfaces::BlockInfo& block)
+void TxIndex::DB::WriteTxs(CDBBatch& batch, const interfaces::BlockInfo& block)
 {
     // A block may be submitted again after it was already indexed, e.g. when it
     // reconnects after a reorg or is re-processed after an unclean shutdown. It
     // keeps its original sequence number, so skip it to avoid duplicate entries.
     if (Exists(txindex::BlockHashKey{block.hash})) return;
 
-    uint32_t block_seq{0};
-    Read(txindex::DB_NEXT_BLOCK_SEQ, block_seq);
-
-    CDBBatch batch(*this);
+    const uint32_t block_seq{m_next_block_seq++};
     batch.Write(txindex::BlockHashKey{block.hash}, block_seq);
     batch.Write(txindex::BlockSeqKey{block_seq}, block.hash);
-    batch.Write(txindex::DB_NEXT_BLOCK_SEQ, block_seq + 1);
+    batch.Write(txindex::DB_NEXT_BLOCK_SEQ, m_next_block_seq);
     uint32_t tx_offset_in_block{txindex::BLOCK_HEADER_SIZE + GetSizeOfCompactSize(block.data->vtx.size())};
     for (const auto& tx : block.data->vtx) {
         const txindex::DBKey key{txindex::CreateKeyPrefix(m_hasher, tx->GetHash()),
@@ -129,7 +133,6 @@ void TxIndex::DB::WriteTxs(const interfaces::BlockInfo& block)
         batch.Write(key, txindex::EMPTY_VALUE);
         tx_offset_in_block += tx->ComputeTotalSize();
     }
-    WriteBatch(batch);
 }
 
 TxIndex::TxIndex(std::unique_ptr<interfaces::Chain> chain, size_t n_cache_size, bool f_memory, bool f_wipe)
@@ -144,13 +147,13 @@ TxIndex::TxIndex(std::unique_ptr<interfaces::Chain> chain, size_t n_cache_size, 
 
 TxIndex::~TxIndex() = default;
 
-bool TxIndex::CustomAppend(const interfaces::BlockInfo& block)
+bool TxIndex::CustomAppend(CDBBatch& batch, const interfaces::BlockInfo& block)
 {
     // Exclude genesis block transaction because outputs are not spendable.
     if (block.height == 0) return true;
 
     assert(block.data);
-    m_db->WriteTxs(block);
+    m_db->WriteTxs(batch, block);
     return true;
 }
 

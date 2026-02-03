@@ -48,7 +48,7 @@ private:
     std::optional<TxIndexResult> FindLegacyTx(const Txid& tx_hash) const;
 
 protected:
-    bool CustomAppend(const interfaces::BlockInfo& block) override;
+    bool CustomAppend(CDBBatch& batch, const interfaces::BlockInfo& block) override;
 
     BaseIndex::DB& GetDB() const override;
 
