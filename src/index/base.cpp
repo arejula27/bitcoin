@@ -31,6 +31,7 @@
 #include <validation.h>
 #include <validationinterface.h>
 
+#include <algorithm>
 #include <compare>
 #include <cstdint>
 #include <functional>
@@ -154,7 +155,7 @@ struct BlockRange {
 };
 
 // Returns the next range of blocks to sync, or 'std::nullopt' if fully synced
-static std::optional<BlockRange> NextSyncRange(const CBlockIndex* const pindex_prev, const CChain& chain) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+static std::optional<BlockRange> NextSyncRange(const CBlockIndex* const pindex_prev, const CChain& chain, const int range_max_size) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
     AssertLockHeld(cs_main);
     BlockRange range;
@@ -178,9 +179,14 @@ static std::optional<BlockRange> NextSyncRange(const CBlockIndex* const pindex_p
         }
     }
 
+    // Compute window
     Assume(range.first);
-    // For now, process a single block at time
-    range.last = range.first;
+    const int start_height = range.first->nHeight;
+    const int tip_height = chain.Height();
+    // Compute the last height in the batch without exceeding the chain tip
+    const int batch_end_height = std::min(start_height + range_max_size - 1, tip_height);
+    range.last = chain[batch_end_height];
+
     return range;
 }
 
@@ -242,7 +248,7 @@ void BaseIndex::Sync()
         auto last_log_time{NodeClock::now()};
         auto last_locator_write_time{last_log_time};
         while (!m_interrupt) {
-            auto block_range = WITH_LOCK(cs_main, return NextSyncRange(pindex, m_chainstate->m_chain));
+            auto block_range = WITH_LOCK(cs_main, return NextSyncRange(pindex, m_chainstate->m_chain, m_num_blocks_batch));
             // If range.first is null, it means pindex is the chain tip, so
             // commit data indexed so far.
             if (!block_range) {
@@ -256,7 +262,7 @@ void BaseIndex::Sync()
                 // attached while m_synced is still false, and it would not be
                 // indexed.
                 LOCK(::cs_main);
-                block_range = NextSyncRange(pindex, m_chainstate->m_chain);
+                block_range = NextSyncRange(pindex, m_chainstate->m_chain, m_num_blocks_batch);
                 if (!block_range) {
                     m_synced = true;
                     break;
