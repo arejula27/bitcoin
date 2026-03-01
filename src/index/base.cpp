@@ -148,28 +148,33 @@ bool BaseIndex::Init()
     return true;
 }
 
-static const CBlockIndex* NextSyncBlock(const CBlockIndex* const pindex_prev, CChain& chain) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+// Returns the next block to sync, or null if fully synced
+static const CBlockIndex* NextSyncBlock(const CBlockIndex* const pindex_prev, const CChain& chain) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
     AssertLockHeld(cs_main);
+    const CBlockIndex* first;
 
     if (!pindex_prev) {
-        return chain.Genesis();
+        // Only the genesis block has no prev block
+        first = chain.Genesis();
+    } else {
+        first = chain.Next(*pindex_prev);
+        if (!first) {
+            // If there is no next block, we might be synced
+            if (pindex_prev == chain.Tip()) {
+                return nullptr;
+            }
+
+            // Since block is not in the chain, return the next block in the chain AFTER the last common ancestor.
+            // Caller will be responsible for rewinding back to the common ancestor.
+            const auto* fork{chain.FindFork(*pindex_prev)};
+            // Common ancestor must exist (genesis).
+            first = chain.Next(*Assert(fork));
+        }
     }
 
-    if (const auto* pindex{chain.Next(*pindex_prev)}) {
-        return pindex;
-    }
-
-    // If there is no next block, we might be synced
-    if (pindex_prev == chain.Tip()) {
-        return nullptr;
-    }
-
-    // Since block is not in the chain, return the next block in the chain AFTER the last common ancestor.
-    // Caller will be responsible for rewinding back to the common ancestor.
-    const auto* fork{chain.FindFork(*pindex_prev)};
-    // Common ancestor must exist (genesis).
-    return chain.Next(*Assert(fork));
+    Assume(first);
+    return first;
 }
 
 bool BaseIndex::ProcessBlock(const CBlockIndex* pindex, const CBlock* block_data)
