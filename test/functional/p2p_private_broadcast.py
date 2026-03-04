@@ -188,11 +188,14 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
             Return the connection type (outbound-full-relay, private-broadcast, etc) or
             None if there is no connection attempt to to_addr:to_port.
             """
-            with open(self.tx_originator_debug_log_path, mode="r", encoding="utf-8") as debug_log:
-                for line in debug_log.readlines():
-                    match = re.match(f".*trying v. connection \\((.+)\\) to \\[?{to_addr}]?:{to_port},.*", line)
-                    if match:
-                        return match.group(1)
+            try:
+                with open(self.tx_originator_debug_log_path, mode="r", encoding="utf-8") as debug_log:
+                    for line in debug_log.readlines():
+                        match = re.match(f".*trying v. connection \\((.+)\\) to \\[?{to_addr}]?:{to_port},.*", line)
+                        if match:
+                            return match.group(1)
+            except OSError:
+                pass
             return None
 
         def destinations_factory(requested_to_addr, requested_to_port):
@@ -291,6 +294,10 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
             ],
         ]
         super().setup_nodes()
+        # Set the log path here so that destinations_factory (which runs in the
+        # SOCKS5 server thread) can access it as soon as nodes start making
+        # connections — before run_test() would normally set it.
+        self.tx_originator_debug_log_path = self.nodes[0].debug_log_path
 
     def setup_network(self):
         self.setup_nodes()
@@ -357,7 +364,6 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
 
     def run_test(self):
         tx_originator = self.nodes[0]
-        self.tx_originator_debug_log_path = tx_originator.debug_log_path
         tx_receiver = self.nodes[1]
         far_observer = tx_receiver.add_p2p_connection(P2PInterface())
 
