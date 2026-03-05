@@ -188,14 +188,11 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
             Return the connection type (outbound-full-relay, private-broadcast, etc) or
             None if there is no connection attempt to to_addr:to_port.
             """
-            try:
-                with open(self.tx_originator_debug_log_path, mode="r", encoding="utf-8") as debug_log:
-                    for line in debug_log.readlines():
-                        match = re.match(f".*trying v. connection \\((.+)\\) to \\[?{to_addr}]?:{to_port},.*", line)
-                        if match:
-                            return match.group(1)
-            except OSError:
-                pass
+            with open(self.tx_originator_debug_log_path, mode="r", encoding="utf-8") as debug_log:
+                for line in debug_log.readlines():
+                    match = re.match(f".*trying v. connection \\((.+)\\) to \\[?{to_addr}]?:{to_port},.*", line)
+                    if match:
+                        return match.group(1)
             return None
 
         def destinations_factory(requested_to_addr, requested_to_port):
@@ -294,9 +291,6 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
             ],
         ]
         super().setup_nodes()
-        # Set the log path here so that destinations_factory (which runs in the
-        # SOCKS5 server thread) can access it as soon as nodes start making
-        # connections — before run_test() would normally set it.
         self.tx_originator_debug_log_path = self.nodes[0].debug_log_path
 
     def setup_network(self):
@@ -374,6 +368,11 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
             res = tx_originator.addpeeraddress(address=addr, port=0 if addr.endswith(".i2p") else 8333, tried=False)
             if not res["success"]:
                 self.log.debug(f"Could not add {addr} to tx_originator's addrman (collision?)")
+
+        def first_connection_ready():
+            with self.destinations_lock:
+                return len(self.destinations) > 0
+        self.wait_until(first_connection_ready)
 
         txs = wallet.create_self_transfer_chain(chain_length=3)
         self.log.info(f"Created txid={txs[0]['txid']}: for basic test")
