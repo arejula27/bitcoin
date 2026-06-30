@@ -130,6 +130,7 @@ void SetupCommonTestArgs(ArgsManager& argsman)
 {
     argsman.AddArg("-testdatadir", strprintf("Custom data directory (default: %s<random_string>)", fs::PathToString(fs::temp_directory_path() / TEST_DIR_PATH_ELEMENT / "")),
                    ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
+    argsman.AddArg("-sigcachesize=<n>", "Signature cache size in MiB; 0 disables the cache", ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
 }
 
 /** Test setup failure */
@@ -310,7 +311,7 @@ ChainTestingSetup::ChainTestingSetup(const ChainType chainType, TestOpts opts)
             // Use no worker threads while fuzzing to avoid non-determinism
             .worker_threads_num = EnableFuzzDeterminism() ? 0 : m_node.args->GetIntArg("-par", 2),
         };
-        if (opts.min_validation_cache) {
+        if (opts.min_validation_cache || m_node.args->GetIntArg("-sigcachesize", -1) == 0) {
             chainman_opts.script_execution_cache_bytes = 0;
             chainman_opts.signature_cache_bytes = 0;
         }

@@ -53,7 +53,7 @@ static std::vector<std::string> parseTestSetupArgs(const ArgsManager& argsman)
 {
     // Parses unit test framework arguments supported by the benchmark framework.
     std::vector<std::string> args;
-    static std::vector<std::string> AVAILABLE_ARGS = {"-testdatadir", "-par"};
+    static std::vector<std::string> AVAILABLE_ARGS = {"-testdatadir", "-par", "-sigcachesize"};
     for (const std::string& arg_name : AVAILABLE_ARGS) {
         auto op_arg = argsman.GetArg(arg_name);
         if (op_arg) args.emplace_back(strprintf("%s=%s", arg_name, *op_arg));
