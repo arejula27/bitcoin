@@ -550,6 +550,64 @@ kill 43663
 
 ---
 
+## 2026-07-01 — Experimento 0.5s: SVG + tabla CV + raw summary (10 workers)
+
+### Comandos
+
+```bash
+NANOBENCH_SUPPRESS_WARNINGS=1 NANOBENCH_ENDLESS=ConnectBlockMixedEcdsaSchnorr \
+  ./build/bin/bench_bitcoin -filter=ConnectBlockMixedEcdsaSchnorr -par=10 &
+
+sudo perf timechart record -- sleep 0.5 && sudo chmod a+r perf.data
+perf timechart -p bench_bitcoin -o gantt_05s.svg
+perf sched timehist --summary
+```
+
+### Raw summary
+
+```
+                          comm  parent   sched-in     run-time    min-run     avg-run     max-run  stddev  migrations
+                                          (count)       (msec)     (msec)      (msec)      (msec)       %
+---------------------------------------------------------------------------------------------------------------------
+    b-scriptch.05[51136/51128]   51128         31      471.579      0.007      15.212      27.703   12.26       0
+    b-scriptch.07[51138/51128]   51128         46      464.426      0.009      10.096      25.328   14.82       0
+    b-scriptch.04[51135/51128]   51128         54      459.876      0.008       8.516      26.046   15.11       0
+    b-scriptch.01[51132/51128]   51128         55      451.124      0.009       8.202      24.758   14.92       0
+    b-scriptch.03[51134/51128]   51128         41      447.106      0.003      10.905      24.484   14.73       0
+                 b-test[51128]    4534        106      448.493      0.003       4.231      21.581   16.75       0
+    b-scriptch.00[51131/51128]   51128         26      425.046      0.002      16.347      23.445   10.90       0
+    b-scriptch.09[51140/51128]   51128         34      423.821      0.005      12.465      23.467   14.13       0
+    b-scriptch.08[51139/51128]   51128         29      421.800      0.005      14.544      23.452   11.93       0
+    b-scriptch.06[51137/51128]   51128         27      421.354      0.006      15.605      23.540   11.51       0
+    b-scriptch.02[51133/51128]   51128         31      421.064      0.002      13.582      23.463   13.63       0
+```
+
+### SVG
+
+![Gantt 10 workers 0.5s — perf timechart](gantt_05s.svg)
+
+### Tabla de runtimes y CV
+
+| Worker | Runtime (ms) | Diff vs media |
+|---|---:|---:|
+| b-scriptch.05 | 471.6 | **+7.0%** |
+| b-scriptch.07 | 464.4 | +5.4% |
+| b-scriptch.04 | 459.9 | +4.3% |
+| b-scriptch.01 | 451.1 | +2.4% |
+| b-scriptch.03 | 447.1 | +1.4% |
+| b-scriptch.00 | 425.0 | -3.6% |
+| b-scriptch.09 | 423.8 | -3.8% |
+| b-scriptch.08 | 421.8 | -4.3% |
+| b-scriptch.06 | 421.4 | -4.4% |
+| b-scriptch.02 | 421.1 | **-4.5%** |
+| b-test (master) | 448.5 | — |
+
+**Media: 440.7 ms — Stddev: 20.2 ms — CV: 4.6%**
+
+Spread min/max: 95.5%–107.0% de la media (~11.5% entre extremos).
+
+---
+
 ## 2026-07-01 — Experimento unificado: SVG + tabla CV del mismo perf.data (10 workers, 5s)
 
 ### Comandos
