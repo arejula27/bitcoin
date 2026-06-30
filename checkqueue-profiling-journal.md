@@ -608,6 +608,74 @@ Spread min/max: 95.5%–107.0% de la media (~11.5% entre extremos).
 
 ---
 
+## 2026-07-01 — Experimento 15s: SVG + tabla CV + raw summary (10 workers)
+
+### Comandos
+
+```bash
+NANOBENCH_SUPPRESS_WARNINGS=1 NANOBENCH_ENDLESS=ConnectBlockMixedEcdsaSchnorr \
+  ./build/bin/bench_bitcoin -filter=ConnectBlockMixedEcdsaSchnorr -par=10 &
+
+sudo perf timechart record -- sleep 15 && sudo chmod a+r perf.data
+perf timechart -p bench_bitcoin -o gantt_15s.svg
+perf sched timehist --summary
+```
+
+### Verificación de identidad de threads
+
+Todos los threads muestran `parent=53905` (PID exacto del benchmark). Los nombres `b-scriptch.XX` son asignados explícitamente por Bitcoin Core en `src/checkqueue.h` vía `util::ThreadSetInternalName`. Ningún otro proceso del sistema tiene threads con ese nombre.
+
+### Raw summary
+
+```
+                          comm  parent   sched-in     run-time    min-run     avg-run     max-run  stddev  migrations
+                                          (count)       (msec)     (msec)      (msec)      (msec)       %
+---------------------------------------------------------------------------------------------------------------------
+    b-scriptch.03[53918/53905]   53905       1035    13315.130      0.002      12.864      31.712    2.60       0
+    b-scriptch.08[53923/53905]   53905        987    13187.288      0.002      13.360      30.028    2.57       0
+    b-scriptch.09[53924/53905]   53905        894    13114.945      0.001      14.669      30.057    2.43       0
+                 b-test[53905]    4534       2843    13136.621      0.002       4.620      28.629    3.07       0
+    b-scriptch.02[53917/53905]   53905        950    12971.242      0.001      13.653      33.330    2.52       0
+    b-scriptch.07[53922/53905]   53905        963    12900.125      0.001      13.395      29.921    2.52       0
+    b-scriptch.06[53921/53905]   53905       1078    12855.596      0.001      11.925      31.425    2.61       0
+    b-scriptch.05[53920/53905]   53905       1033    12474.228      0.001      12.075      29.104    2.59       0
+    b-scriptch.01[53916/53905]   53905        859    12337.809      0.001      14.362      29.956    2.37       0
+    b-scriptch.04[53919/53905]   53905        816    12329.473      0.001      15.109      30.594    2.26       0
+    b-scriptch.00[53915/53905]   53905        813    12314.818      0.001      15.147      28.289    2.26       0
+```
+
+### SVG
+
+![Gantt 10 workers 15s — perf timechart](gantt_15s.svg)
+
+### Tabla de runtimes y CV
+
+| Worker | Runtime (ms) | Diff vs media |
+|---|---:|---:|
+| b-scriptch.03 | 13315.1 | **+4.2%** |
+| b-scriptch.08 | 13187.3 | +3.2% |
+| b-scriptch.09 | 13114.9 | +2.6% |
+| b-scriptch.02 | 12971.2 | +1.5% |
+| b-scriptch.07 | 12900.1 | +0.9% |
+| b-scriptch.06 | 12855.6 | +0.6% |
+| b-scriptch.05 | 12474.2 | -2.4% |
+| b-scriptch.01 | 12337.8 | -3.5% |
+| b-scriptch.04 | 12329.5 | -3.5% |
+| b-scriptch.00 | 12314.8 | **-3.6%** |
+| b-test (master) | 13136.6 | — |
+
+**Media: 12780.1 ms — Stddev: 384.4 ms — CV: 3.0%**
+
+Spread min/max: 96.4%–104.2% de la media (~7.8% entre extremos).
+
+### Revisión de mediciones anteriores con `perf sched record`
+
+Las mediciones antiguas de 15s (sección "Experimentos — ConnectBlockMixedEcdsaSchnorr") mostraban CV ~19% y runtimes individuales >30s en una ventana de 15s (e.g. scriptch.03: 34527ms), lo cual es físicamente imposible para un hilo en 15s de elapsed. Esos datos tenían artefactos de medición: `perf sched record -p $PID` capturaba threads con `parent=-1` (no verificado contra el PID del proceso), y posiblemente acumulaba mal los intervalos al adjuntarse a un proceso ya en marcha.
+
+Las mediciones con `perf timechart record` (system-wide, filtrado por nombre de proceso en postproceso) dan resultados coherentes y verificables: runtimes < elapsed, parent PID explícito, CV estable entre 3–5% en todas las ventanas temporales.
+
+---
+
 ## 2026-07-01 — Experimento unificado: SVG + tabla CV del mismo perf.data (10 workers, 5s)
 
 ### Comandos
