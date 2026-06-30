@@ -782,6 +782,23 @@ Trace de 3 min (`perf.data`) y `perf.data.old` (60s). Las ventanas de 0.5s, 5s y
 
 **Implicación para la propuesta:** un reparto más equilibrado de checks entre workers (pre-scan de coste estimado, distribución por peso) reduciría el spread por bloque de ~8ms hacia cero. Con 10 workers, 5000 checks/bloque y `nBatchSize=128`, la granularidad actual impide un reparto fino. Reducir el spread en ~8ms reduciría la latencia de `ConnectBlock` en ~8ms por bloque (~23%).
 
+### ¿Vale la pena calcular CV por bloque?
+
+Se consideró calcular, por cada bloque, la desviación de cada worker respecto a la media de finish times del bloque, y luego promediar across bloques. Eso daría una descripción más rica de la distribución intra-bloque que el simple max-min.
+
+**Conclusión: no añade valor sobre el spread.** El problema que queremos cuantificar es "cuánto tarda ConnectBlock de más por culpa del straggler". Eso es exactamente `max_finish - min_finish`. La media de desviaciones respecto a la media daría más detalle pero no cambiaría la conclusión ni la propuesta arquitectónica. La métrica relevante es siempre el último en terminar, no la distribución completa.
+
+### Siguiente paso para métricas per-block precisas
+
+El boundary detection actual (eventos de `b-test` con run_ms >= 1ms) es impreciso: b-test tiene múltiples eventos de scheduling por bloque (Add(), sleep en Complete(), wakeup, cleanup), lo que parte cada bloque real en ~2 sub-ventanas y da makespan de ~16ms en vez de ~35ms. Cualquier ratio calculado sobre ese makespan arrastra el error.
+
+Para tener boundaries exactos sin instrumentar el código, las opciones son:
+
+- **bpftrace en `pthread_cond_signal`**: cuando el último worker señaliza a `m_master_cv`, b-test despierta de `Complete()` — ese evento es el fin de bloque exacto
+- **uprobe en `CCheckQueueControl::Complete()`**: hookear la función directamente con bpftrace/perf probe
+
+Con boundaries exactos, el makespan real sería ~35ms y el waste ratio estaría bien calculado: 8ms / 35ms ≈ 23%.
+
 ---
 
 ## 2026-07-01 — Experimento unificado: SVG + tabla CV del mismo perf.data (10 workers, 5s)
