@@ -676,6 +676,72 @@ Las mediciones con `perf timechart record` (system-wide, filtrado por nombre de 
 
 ---
 
+## 2026-07-01 — Experimento 60s: tabla CV + raw summary (10 workers)
+
+### Comandos
+
+```bash
+NANOBENCH_SUPPRESS_WARNINGS=1 NANOBENCH_ENDLESS=ConnectBlockMixedEcdsaSchnorr \
+  ./build/bin/bench_bitcoin -filter=ConnectBlockMixedEcdsaSchnorr -par=10 &
+
+sudo perf timechart record -- sleep 60 && sudo chmod a+r perf.data
+perf timechart -p bench_bitcoin -o gantt_60s.svg   # 51 MB — no en git
+perf sched timehist --summary
+```
+
+### Raw summary
+
+```
+                          comm  parent   sched-in     run-time    min-run     avg-run     max-run  stddev  migrations
+                                          (count)       (msec)     (msec)      (msec)      (msec)       %
+---------------------------------------------------------------------------------------------------------------------
+    b-scriptch.07[55466/55456]   55456       3263    52639.788      0.002      16.132      37.597    1.45       0
+    b-scriptch.04[55463/55456]   55456       3187    52189.367      0.002      16.375      35.733    1.41       0
+    b-scriptch.05[55464/55456]   55456       3052    52091.060      0.002      17.067      37.538    1.38       0
+    b-scriptch.01[55460/55456]   55456       3179    51994.568      0.002      16.355      36.308    1.42       0
+    b-scriptch.08[55467/55456]   55456       3075    51231.788      0.001      16.660      37.260    1.40       0
+    b-scriptch.06[55465/55456]   55456       3094    51092.704      0.001      16.513      37.279    1.41       0
+    b-scriptch.02[55461/55456]   55456       3020    50879.515      0.001      16.847      37.328    1.39       0
+    b-scriptch.09[55468/55456]   55456       2928    50104.555      0.001      17.112      37.367    1.36       0
+    b-scriptch.03[55462/55456]   55456       2857    50024.516      0.001      17.509      37.280    1.34       0
+    b-scriptch.00[55459/55456]   55456       2761    49777.516      0.001      18.028      37.258    1.30       0
+                 b-test[55456]    4534       7891    53417.552      0.002       6.769      70.872    1.68       0
+```
+
+### Tabla de runtimes y CV
+
+| Worker | Runtime (ms) | Diff vs media |
+|---|---:|---:|
+| b-scriptch.07 | 52639.8 | **+2.8%** |
+| b-scriptch.04 | 52189.4 | +1.9% |
+| b-scriptch.05 | 52091.1 | +1.7% |
+| b-scriptch.01 | 51994.6 | +1.5% |
+| b-scriptch.08 | 51231.8 | +0.1% |
+| b-scriptch.06 | 51092.7 | -0.2% |
+| b-scriptch.02 | 50879.5 | -0.6% |
+| b-scriptch.09 | 50104.6 | -2.1% |
+| b-scriptch.03 | 50024.5 | -2.3% |
+| b-scriptch.00 | 49777.5 | **-2.8%** |
+| b-test (master) | 53417.6 | — |
+
+**Media: 51202.5 ms — Stddev: 1010.9 ms — CV: 2.0%**
+
+Spread min/max: 97.2%–102.8% (~5.6% entre extremos).
+
+### Tendencia: convergencia por ley de grandes números
+
+| Ventana | CV | Spread min/max |
+|---:|---:|---:|
+| 0.5s | 4.6% | ~11% |
+| 15s | 3.0% | ~8% |
+| 60s | **2.0%** | ~6% |
+
+El CV decrece con la ventana de medición. La distribución aleatoria de batches entre workers se promedia sobre cientos/miles de bloques. Con 60s y ~35ms por bloque se procesan ~1700 bloques: la varianza por bloque individual se divide por √1700 ≈ 41 — exactamente el comportamiento esperado de una suma de variables independientes.
+
+**Conclusión:** el desbalance en `CCheckQueue` con cache caliente no es un problema estructural sostenido — es varianza estadística que converge. El impacto real está en la **latencia de un único bloque**, donde el worker más lento retiene `ConnectBlock`. Eso requiere medir sin cache (escenario A: `-sigcachesize=0`).
+
+---
+
 ## 2026-07-01 — Experimento unificado: SVG + tabla CV del mismo perf.data (10 workers, 5s)
 
 ### Comandos
