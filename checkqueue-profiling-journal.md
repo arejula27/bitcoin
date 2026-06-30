@@ -772,13 +772,15 @@ Trace de 3 min (`perf.data`) y `perf.data.old` (60s). Las ventanas de 0.5s, 5s y
 
 ### Análisis
 
-**El waste ratio es ~50% independientemente de la ventana.** No converge como el CV global — es una propiedad estructural del scheduling por bloque, no varianza estadística.
+**El spread de ~8ms por bloque es consistente e independiente de la ventana de medición.** No converge como el CV global — es una propiedad estructural del scheduling por bloque.
 
-Con bloques de ~35ms (cache caliente) y spread medio de ~8ms: los workers más rápidos terminan ~8ms antes que el más lento, y ese tiempo se pierde esperando. En el p95, el spread llega a 30-36ms — casi un bloque completo de diferencia entre el primero y el último en terminar.
+**Limitación del waste ratio:** el makespan calculado (~16ms) es la mitad de la duración real de los bloques (~35ms visible en el Gantt), porque la detección de límites de bloque basada en eventos de `b-test` está partiendo cada bloque real en ~2 sub-ventanas. `b-test` tiene varios eventos de scheduling por bloque (Add(), sleep en Complete(), wakeup, cleanup). La ratio spread/makespan del ~50% es un artefacto de este error de detección.
 
-**Por qué el CV global era engañoso:** el CV global suma runtimes a lo largo de cientos de bloques. Si en el bloque 1 el straggler es el worker 3, en el bloque 2 es el worker 7, y así sucesivamente rotando, el CV global converge a cero. Pero en cada bloque individual siempre hay alguien esperando ~8ms. El CV global enmascara exactamente el problema que nos importa.
+**La métrica correcta:** spread de ~8ms sobre bloques reales de ~35ms → **~23% del tiempo de bloque malgastado** en espera del worker más lento. En el p95 el spread llega a 30-36ms, casi un bloque completo de diferencia entre el primero y el último en terminar.
 
-**Implicación para la propuesta:** un scheduling más justo (pre-scan de coste + distribución equilibrada) podría reducir el spread por bloque de ~8ms a algo mucho menor. Con 10 workers, 5000 checks/bloque y `nBatchSize=128`, la granularidad actual de los batches impide un reparto fino. Un reparto más equilibrado reduciría el makespan por bloque y por tanto la latencia de `ConnectBlock`.
+**Por qué el CV global era engañoso:** si en el bloque 1 el straggler es el worker 3, en el bloque 2 el worker 7, etc., el CV global converge a cero pero en cada bloque hay siempre ~8ms de espera. El CV global enmascara exactamente el problema que importa: la latencia de `ConnectBlock` está determinada por el más lento en cada bloque individual.
+
+**Implicación para la propuesta:** un reparto más equilibrado de checks entre workers (pre-scan de coste estimado, distribución por peso) reduciría el spread por bloque de ~8ms hacia cero. Con 10 workers, 5000 checks/bloque y `nBatchSize=128`, la granularidad actual impide un reparto fino. Reducir el spread en ~8ms reduciría la latencia de `ConnectBlock` en ~8ms por bloque (~23%).
 
 ---
 
