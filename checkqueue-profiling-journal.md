@@ -886,6 +886,87 @@ La distribución es una campana sesgada a la derecha: mayoría entre 2-5ms, cola
 
 ---
 
+## 2026-07-01 — bpftrace con `-sigcachesize=0`: spread per-block sin cache de firmas
+
+### Contexto: qué es `min_validation_cache` y cómo funciona el nuevo flag
+
+`TestOpts::min_validation_cache` es un flag del framework de tests de Bitcoin Core que, cuando está a `true`, pone a cero tanto `ChainstateManager::Options::signature_cache_bytes` como `script_execution_cache_bytes`. Esto deshabilita completamente la `CSignatureCache` — la cache que evita reverificar firmas ya vistas.
+
+En el benchmark sin este flag (modo por defecto): la primera iteración del bloque sintético verifica criptográficamente las 5000 firmas. Las siguientes iteraciones son hits de cache (~nanosegundos por check). El benchmark mide en la práctica el throughput de cache lookups, no de verificación criptográfica.
+
+Con `-sigcachesize=0`: **cada iteración verifica criptográficamente todas las firmas**. Cada check ejecuta ECDSA o Schnorr completo. Esto es representativo de:
+- **IBD sin assumevalid**: los bloques son nuevos, las firmas nunca se han visto → cache siempre fría
+- **Tip validation con bloque que contiene txs fuera del mempool**: firmas no precalculadas
+
+#### Cambios en el código
+
+Para poder pasar `-sigcachesize=0` desde la CLI del benchmark fue necesario:
+
+**`src/test/util/setup_common.cpp`** — registrar `-sigcachesize` en `SetupCommonTestArgs` (que inicializa tanto el ArgsManager del benchmark como el del nodo interno `gArgs`), y leerlo en la inicialización del chainstate:
+
+```cpp
+// SetupCommonTestArgs:
+argsman.AddArg("-sigcachesize=<n>", "...", ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
+
+// ChainTestingSetup:
+if (opts.min_validation_cache || m_node.args->GetIntArg("-sigcachesize", -1) == 0) {
+    chainman_opts.script_execution_cache_bytes = 0;
+    chainman_opts.signature_cache_bytes = 0;
+}
+```
+
+**`src/bench/bench_bitcoin.cpp`** — añadir `-sigcachesize` a `AVAILABLE_ARGS` para que se reenvíe al test setup:
+```cpp
+static std::vector<std::string> AVAILABLE_ARGS = {"-testdatadir", "-par", "-sigcachesize"};
+```
+
+### Comandos
+
+```bash
+NANOBENCH_SUPPRESS_WARNINGS=1 NANOBENCH_ENDLESS=ConnectBlockMixedEcdsaSchnorr \
+  ./build/bin/bench_bitcoin -filter=ConnectBlockMixedEcdsaSchnorr -par=10 -sigcachesize=0 &
+
+sudo bpftrace /tmp/block_spread.bt > /tmp/bpftrace_nocache.txt 2>&1 &
+sleep 10 && sudo kill $(pgrep bpftrace)
+```
+
+### Resultados
+
+271 bloques en 10s → **~35.4ms por bloque**. Ejecución limpia con un único proceso `b-test` (la primera ejecución estaba contaminada con dos procesos solapados y fue descartada).
+
+| Métrica | Con cache | Sin cache (`-sigcachesize=0`) |
+|---|---:|---:|
+| Duración media bloque | 46 ms | 35.4 ms |
+| Spread medio | 4.44 ms | 3.07 ms |
+| Spread mediana | 4.23 ms | 2.70 ms |
+| Spread stddev | 1.83 ms | 1.81 ms |
+| Spread p95 | 7.90 ms | 6.06 ms |
+| Spread p99 | 8.56 ms | 6.99 ms |
+| Spread máx | 9.35 ms | 19.13 ms |
+| Waste ratio medio | 9.6% | 8.7% |
+| Waste ratio p95 | 17.2% | 17.1% |
+| CV del spread | 41% | 59.0% |
+
+### Distribución del spread sin cache
+
+```
+  0-  5ms:  237 (87.5%)  ████████████████████████████████████████
+  5- 10ms:   33 (12.2%)  █████
+ 15- 20ms:    1 ( 0.4%)
+```
+
+### Análisis
+
+Contra lo esperado, el spread **baja** sin cache (3.07ms vs 4.44ms) y el waste ratio también (8.7% vs 9.6%). La distribución es más concentrada: 87.5% de bloques con spread <5ms, vs ~60% con cache caliente.
+
+**Por qué bajan los spreads:** con cache caliente, los lookups tienen varianza propia (contención del mutex de la cache, líneas de cache frías en la primera iteración por bloque sintético). Sin cache, cada check ejecuta ECDSA/Schnorr completo — operaciones más lentas pero uniformes en coste. La eliminación de la varianza del cache lookup reduce la dispersión entre workers.
+
+**El CV sube a 59% (vs 41% con cache):** aunque los spreads absolutos son menores, hay más variabilidad relativa entre bloques. Hay un outlier de 19ms (vs 9ms máx con cache) — probablemente un bloque donde un worker acumuló un batch de Schnorr más costoso.
+
+**Limitación del benchmark:** el bloque sintético es siempre el mismo. En producción cada bloque tiene distinta composición de script types y número de inputs, lo que daría spreads más variables y haría la comparativa más significativa.
+
+---
+
 ## 2026-07-01 — Experimento unificado: SVG + tabla CV del mismo perf.data (10 workers, 5s)
 
 ### Comandos
