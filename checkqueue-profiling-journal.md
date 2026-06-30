@@ -528,7 +528,6 @@ kill 43663
 
 **Resultado:** `gantt_zoom.svg` (479 KB, 1000×1260 px).
 
-![Gantt zoom 500ms — perf timechart](gantt_zoom.svg)
 
 ### Datos extraídos del SVG
 
@@ -584,7 +583,6 @@ perf sched timehist --summary
 
 ### SVG
 
-![Gantt 10 workers 0.5s — perf timechart](gantt_05s.svg)
 
 ### Tabla de runtimes y CV
 
@@ -646,7 +644,6 @@ Todos los threads muestran `parent=53905` (PID exacto del benchmark). Los nombre
 
 ### SVG
 
-![Gantt 10 workers 15s — perf timechart](gantt_15s.svg)
 
 ### Tabla de runtimes y CV
 
@@ -827,7 +824,6 @@ kill 48192
 
 ### SVG
 
-![Gantt 10 workers 5s — perf timechart](gantt_zoom2.svg)
 
 ### Tabla de runtimes y CV
 
