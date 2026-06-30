@@ -526,7 +526,7 @@ sudo perf timechart -p bench_bitcoin -o gantt_zoom.svg
 kill 43663
 ```
 
-**Resultado:** `gantt_zoom.svg` (479 KB, 1000×1260 px).
+**Resultado:** `gantt_zoom.svg` (479 KB, 1000×1260 px). → [ver imagen](gantt_zoom.svg)
 
 
 ### Datos extraídos del SVG
@@ -602,7 +602,7 @@ perf sched timehist --summary
 
 **Media: 440.7 ms — Stddev: 20.2 ms — CV: 4.6%**
 
-Spread min/max: 95.5%–107.0% de la media (~11.5% entre extremos).
+Spread min/max: 95.5%–107.0% de la media (~11.5% entre extremos). → [ver imagen](gantt_05s.svg)
 
 ---
 
@@ -663,7 +663,7 @@ Todos los threads muestran `parent=53905` (PID exacto del benchmark). Los nombre
 
 **Media: 12780.1 ms — Stddev: 384.4 ms — CV: 3.0%**
 
-Spread min/max: 96.4%–104.2% de la media (~7.8% entre extremos).
+Spread min/max: 96.4%–104.2% de la media (~7.8% entre extremos). → [ver imagen](gantt_15s.svg)
 
 ### Revisión de mediciones anteriores con `perf sched record`
 
@@ -858,11 +858,31 @@ La distribución es estrecha (stddev 1.83ms) y el p99 está en 8.56ms — casi n
 
 **Interpretación:** en modo cache-caliente, ConnectBlock tarda ~46ms y los workers terminan dentro de una ventana de ~4.4ms entre sí. El 10% de overhead por imbalance existe pero no es catastrófico. El impacto real estaría con verificación criptográfica real (sin cache), donde los checks son más heterogéneos en coste y el spread sería mayor.
 
+### ¿La distribución del spread es uniforme entre bloques?
+
+No. El CV del spread entre bloques es **41%** — hay mucha variabilidad bloque a bloque:
+
+```
+ 0-1ms:   0 bloques  (0.0%)
+ 1-2ms:  11 bloques  (5.3%)  ██████████
+ 2-3ms:  43 bloques (20.9%)  ████████████████████████████████████████
+ 3-4ms:  39 bloques (18.9%)  ████████████████████████████████████
+ 4-5ms:  42 bloques (20.4%)  ███████████████████████████████████████
+ 5-6ms:  29 bloques (14.1%)  ██████████████████████████
+ 6-7ms:  19 bloques  (9.2%)  █████████████████
+ 7-8ms:  15 bloques  (7.3%)  █████████████
+ 8-9ms:   7 bloques  (3.4%)  ██████
+≥10ms:   0 bloques  (0.0%)
+```
+
+La distribución es una campana sesgada a la derecha: mayoría entre 2-5ms, cola hasta 9ms. El straggler no es siempre el mismo worker ni siempre del mismo tamaño — es varianza aleatoria en la asignación de batches. Algunos bloques quedan casi perfectamente balanceados (~2ms), otros tienen un worker claramente rezagado (~8-9ms).
+
 **Conclusión final del profiling con cache caliente:**
-- CV global: 3-5% (converge, no es la métrica relevante)
-- Spread per-block: 4.4ms media / 7.9ms p95
+- CV global: 3-5% (converge con la ventana, no es la métrica relevante)
+- Spread per-block: 4.4ms media / 7.9ms p95 / distribución con CV=41% entre bloques
 - Waste ratio: ~10% de la duración del bloque
-- Siguiente experimento necesario: repetir con `-sigcachesize=0` para medir el caso real
+- El desbalance es estocástico, no estructural: varía bloque a bloque según qué checks caen en cada batch
+- Siguiente experimento necesario: repetir con `-sigcachesize=0` para medir el caso real con verificación criptográfica
 
 ---
 
@@ -890,8 +910,7 @@ kill 48192
 
 `perf timechart record` captura `sched_switch`/`sched_wakeup`, que son exactamente los eventos que necesita `perf sched timehist`. Un solo recording produce las dos salidas.
 
-### SVG
-
+→ [ver imagen](gantt_zoom2.svg)
 
 ### Tabla de runtimes y CV
 
