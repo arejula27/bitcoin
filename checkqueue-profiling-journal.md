@@ -738,7 +738,47 @@ Spread min/max: 97.2%–102.8% (~5.6% entre extremos).
 
 El CV decrece con la ventana de medición. La distribución aleatoria de batches entre workers se promedia sobre cientos/miles de bloques. Con 60s y ~35ms por bloque se procesan ~1700 bloques: la varianza por bloque individual se divide por √1700 ≈ 41 — exactamente el comportamiento esperado de una suma de variables independientes.
 
-**Conclusión:** el desbalance en `CCheckQueue` con cache caliente no es un problema estructural sostenido — es varianza estadística que converge. El impacto real está en la **latencia de un único bloque**, donde el worker más lento retiene `ConnectBlock`. Eso requiere medir sin cache (escenario A: `-sigcachesize=0`).
+**Conclusión parcial:** el CV global converge, pero el problema real es otro: aunque globalmente los workers se equilibren, dentro de cada bloque los rápidos terminan antes y quedan idle esperando al más lento. El global siendo uniforme no implica que los recursos no se malgasten por bloque — podría ser que primero el worker 1 haga el 80% del trabajo, luego el 2, luego el 3, y el CV global salga bajo aunque en cada bloque haya un straggler claro.
+
+---
+
+## 2026-07-01 — Análisis per-block: spread de finish times y waste ratio
+
+### Motivación
+
+El CV global mide si a lo largo del tiempo cada worker recibe la misma cantidad de trabajo total. No mide el problema real: **dentro de cada bloque individual**, los workers más rápidos terminan antes y quedan idle hasta que el más lento acaba — bloqueando el retorno de `ConnectBlock`. El CV global puede ser bajo aunque en cada bloque haya un straggler importante.
+
+La métrica relevante es:
+- **Spread por bloque**: `max(finish_time) - min(finish_time)` entre workers en un mismo bloque = tiempo que los workers rápidos pierden al final de cada bloque
+- **Waste ratio**: spread / makespan = fracción del bloque que se "malgasta" en espera del straggler
+
+### Método
+
+`perf sched timehist` sin `--summary` da eventos individuales con timestamps. Se identifican límites de bloque por los eventos de `b-test` (el master: llama a `Add()`, duerme en `Complete()`, se despierta cuando todos terminan). Para cada bloque se toma el último evento de scheduling de cada worker y se calcula el spread.
+
+Script: `/tmp/per_block_cv.py`
+
+### Datos
+
+Trace de 3 min (`perf.data`) y `perf.data.old` (60s). Las ventanas de 0.5s, 5s y 15s **no son recordings independientes** — son los primeros N segundos del trace de 3 min recortados por timestamp. El 60s es una grabación real separada.
+
+| Ventana | Bloques analizados | Spread medio | Spread p95 | Waste ratio |
+|---:|---:|---:|---:|---:|
+| 0.5s | 25 | 8.85 ms | 30.3 ms | **50.2%** |
+| 5s | 251 | 7.19 ms | 33.8 ms | **46.7%** |
+| 15s | 738 | 7.42 ms | 34.4 ms | **48.7%** |
+| 60s | 3723 | 7.26 ms | 26.4 ms | **57.6%** |
+| 3m | 8250 | 8.00 ms | 36.0 ms | **49.8%** |
+
+### Análisis
+
+**El waste ratio es ~50% independientemente de la ventana.** No converge como el CV global — es una propiedad estructural del scheduling por bloque, no varianza estadística.
+
+Con bloques de ~35ms (cache caliente) y spread medio de ~8ms: los workers más rápidos terminan ~8ms antes que el más lento, y ese tiempo se pierde esperando. En el p95, el spread llega a 30-36ms — casi un bloque completo de diferencia entre el primero y el último en terminar.
+
+**Por qué el CV global era engañoso:** el CV global suma runtimes a lo largo de cientos de bloques. Si en el bloque 1 el straggler es el worker 3, en el bloque 2 es el worker 7, y así sucesivamente rotando, el CV global converge a cero. Pero en cada bloque individual siempre hay alguien esperando ~8ms. El CV global enmascara exactamente el problema que nos importa.
+
+**Implicación para la propuesta:** un scheduling más justo (pre-scan de coste + distribución equilibrada) podría reducir el spread por bloque de ~8ms a algo mucho menor. Con 10 workers, 5000 checks/bloque y `nBatchSize=128`, la granularidad actual de los batches impide un reparto fino. Un reparto más equilibrado reduciría el makespan por bloque y por tanto la latencia de `ConnectBlock`.
 
 ---
 
