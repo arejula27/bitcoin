@@ -33,6 +33,7 @@ static void SetupBenchArgs(ArgsManager& argsman)
     argsman.AddArg("-output-csv=<output.csv>", "Generate CSV file with the most important benchmark results", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-output-json=<output.json>", "Generate JSON file with all benchmark results", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-sanity-check", "Run benchmarks for only one iteration with no output", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-par=<n>", "Number of script-checking worker threads (forwarded to test setup)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 }
 
 // parses a comma separated list like "10,20,30,50"
@@ -52,7 +53,7 @@ static std::vector<std::string> parseTestSetupArgs(const ArgsManager& argsman)
 {
     // Parses unit test framework arguments supported by the benchmark framework.
     std::vector<std::string> args;
-    static std::vector<std::string> AVAILABLE_ARGS = {"-testdatadir"};
+    static std::vector<std::string> AVAILABLE_ARGS = {"-testdatadir", "-par"};
     for (const std::string& arg_name : AVAILABLE_ARGS) {
         auto op_arg = argsman.GetArg(arg_name);
         if (op_arg) args.emplace_back(strprintf("%s=%s", arg_name, *op_arg));
