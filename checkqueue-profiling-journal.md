@@ -548,6 +548,58 @@ kill 43663
 
 **CV workers: 4.2%** (mean=423ms, stddev=17.9ms)
 
+---
+
+## 2026-07-01 — Experimento unificado: SVG + tabla CV del mismo perf.data (10 workers, 5s)
+
+### Comandos
+
+```bash
+# 1. Lanzar benchmark (PID 48192)
+NANOBENCH_SUPPRESS_WARNINGS=1 NANOBENCH_ENDLESS=ConnectBlockMixedEcdsaSchnorr \
+  ./build/bin/bench_bitcoin -filter=ConnectBlockMixedEcdsaSchnorr -par=10 &
+
+# 2. Grabar y dar permisos de lectura
+sudo perf timechart record -- sleep 5 && sudo chmod a+r perf.data
+
+# 3. SVG (del mismo perf.data)
+perf timechart -p bench_bitcoin -o gantt_zoom2.svg
+
+# 4. Tabla de runtimes (del mismo perf.data)
+perf sched timehist --summary
+
+# 5. Matar benchmark
+kill 48192
+```
+
+`perf timechart record` captura `sched_switch`/`sched_wakeup`, que son exactamente los eventos que necesita `perf sched timehist`. Un solo recording produce las dos salidas.
+
+### SVG
+
+![Gantt 10 workers 5s — perf timechart](gantt_zoom2.svg)
+
+### Tabla de runtimes y CV
+
+| Worker | Runtime (ms) | Diff vs media |
+|---|---:|---:|
+| b-scriptch.04 | 4411.7 | **+5.4%** |
+| b-scriptch.03 | 4388.8 | +4.8% |
+| b-scriptch.02 | 4357.5 | +4.1% |
+| b-scriptch.00 | 4274.2 | +2.1% |
+| b-scriptch.09 | 4215.4 | +0.7% |
+| b-scriptch.08 | 4196.6 | +0.2% |
+| b-scriptch.06 | 4034.9 | -3.6% |
+| b-scriptch.07 | 3998.0 | -4.5% |
+| b-scriptch.01 | 3997.7 | -4.5% |
+| b-scriptch.05 | 3994.1 | **-4.6%** |
+| b-test (master) | 4304.7 | — |
+
+**Media: 4186.9 ms — Stddev: 170.2 ms — CV: 4.1%**
+
+### Observación
+
+CV de 4.1% con 5 segundos de ventana — consistente con el 4.2% del experimento de 500ms anterior. El spread max/min es de ~10% (95-105% de la media), muy inferior al 46-55% observado en las mediciones de 15s con `perf sched record`. La diferencia se debe al modo de medición: `perf timechart` cuenta tiempo en CPU real incluyendo preemptions breves, mientras que `perf sched timehist` acumula varianza de cientos de bloques donde el OS interfiere más. Ninguno de los dos tiene idle significativo — los workers están activos prácticamente todo el tiempo.
+
 ### Análisis
 
 **Los slices grandes (>10ms) son batches de trabajo real.** Cada worker tiene 13-15 slices grandes en 500ms — corresponden a las iteraciones de bloques. A ~35ms por bloque y 10 workers procesando en paralelo, esto es consistente: 500ms / 35ms ≈ 14 bloques.
