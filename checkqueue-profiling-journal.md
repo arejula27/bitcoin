@@ -789,12 +789,80 @@ Se consideró calcular, por cada bloque, la desviación de cada worker respecto 
 
 El boundary detection actual (eventos de `b-test` con run_ms >= 1ms) es impreciso: b-test tiene múltiples eventos de scheduling por bloque (Add(), sleep en Complete(), wakeup, cleanup), lo que parte cada bloque real en ~2 sub-ventanas y da makespan de ~16ms en vez de ~35ms. Cualquier ratio calculado sobre ese makespan arrastra el error.
 
-Para tener boundaries exactos sin instrumentar el código, las opciones son:
+Para tener boundaries exactos sin instrumentar el código: **bpftrace con uretprobe en `pthread_cond_wait` del hilo master** — cada retorno de ese wait = nTodo llegó a 0 = fin de bloque exacto.
 
-- **bpftrace en `pthread_cond_signal`**: cuando el último worker señaliza a `m_master_cv`, b-test despierta de `Complete()` — ese evento es el fin de bloque exacto
-- **uprobe en `CCheckQueueControl::Complete()`**: hookear la función directamente con bpftrace/perf probe
+---
 
-Con boundaries exactos, el makespan real sería ~35ms y el waste ratio estaría bien calculado: 8ms / 35ms ≈ 23%.
+## 2026-07-01 — bpftrace: spread per-block con boundaries exactos
+
+### Script (`/tmp/block_spread.bt`)
+
+```bpftrace
+tracepoint:sched:sched_switch
+/strncmp("b-scriptch", args->prev_comm, 10) == 0/
+{
+    printf("WORKER %llu %s\n", nsecs, args->prev_comm);
+}
+
+uretprobe:/lib64/libc.so.6:pthread_cond_wait
+/comm == "b-test"/
+{
+    printf("BLOCK_END %llu\n", nsecs);
+}
+```
+
+`BLOCK_END` se emite en el retorno de `pthread_cond_wait` del master (`b-test`) — exactamente cuando `nTodo == 0` y `ConnectBlock` puede retornar. `WORKER` se emite en cada descheduling de un worker.
+
+```bash
+NANOBENCH_SUPPRESS_WARNINGS=1 NANOBENCH_ENDLESS=ConnectBlockMixedEcdsaSchnorr \
+  ./build/bin/bench_bitcoin -filter=ConnectBlockMixedEcdsaSchnorr -par=10 &
+
+sudo bpftrace /tmp/block_spread.bt > /tmp/bpftrace_out.txt 2>&1 &
+sleep 10 && sudo kill $(pgrep bpftrace)
+```
+
+### Raw output (muestra)
+
+```
+Attached 2 probes
+WORKER 84158603203700 b-scriptch.01
+WORKER 84158612203918 b-scriptch.01
+...
+BLOCK_END 84158621551136
+WORKER 84158624660931 b-scriptch.03
+...
+```
+
+206 BLOCK_END events en 10s → ~46ms por bloque (consistente con Gantt).
+
+### Resultados
+
+| Métrica | Valor |
+|---|---:|
+| Bloques analizados | 206 |
+| Duración media de bloque | ~46 ms |
+| Spread medio | **4.44 ms** |
+| Spread mediana | 4.23 ms |
+| Spread stddev | 1.83 ms |
+| Spread p95 | 7.90 ms |
+| Spread p99 | 8.56 ms |
+| Spread máx | 9.35 ms |
+| **Waste ratio medio** | **9.6%** |
+| Waste ratio p95 | 17.2% |
+
+### Análisis
+
+Con boundaries exactos el spread medio baja a **4.44ms** (vs los ~8ms del análisis anterior con perf, que tenía boundaries incorrectos). El waste ratio real es **~10%**, no el 23% estimado antes.
+
+La distribución es estrecha (stddev 1.83ms) y el p99 está en 8.56ms — casi ningún bloque tiene un straggler extremo. El mayor spread observado fue 9.35ms sobre bloques de ~46ms.
+
+**Interpretación:** en modo cache-caliente, ConnectBlock tarda ~46ms y los workers terminan dentro de una ventana de ~4.4ms entre sí. El 10% de overhead por imbalance existe pero no es catastrófico. El impacto real estaría con verificación criptográfica real (sin cache), donde los checks son más heterogéneos en coste y el spread sería mayor.
+
+**Conclusión final del profiling con cache caliente:**
+- CV global: 3-5% (converge, no es la métrica relevante)
+- Spread per-block: 4.4ms media / 7.9ms p95
+- Waste ratio: ~10% de la duración del bloque
+- Siguiente experimento necesario: repetir con `-sigcachesize=0` para medir el caso real
 
 ---
 
