@@ -1157,3 +1157,45 @@ No, por las razones siguientes:
 
 1. **Bloques reales heterogéneos**: el benchmark sintético repite el mismo bloque. Con bloques reales (composición variable de script types, número de inputs distinto en cada bloque), el spread podría ser estructuralmente mayor. Requiere IBD parcial o un benchmark paramétrico basado en estadísticas de mainnet.
 2. **Gap entre bloques**: medir cuánto tiempo pasan los workers ociosos entre `ConnectBlock` calls en IBD real y si escala con el número de workers.
+
+---
+
+## 2026-07-01 — Profiling de IBD real con `bitcoind` (no bench): diseño y bug de naming
+
+### Motivación
+
+Punto pendiente #1 de la sección anterior: medir el desbalance por bloque con bloques reales heterogéneos, no el bloque sintético repetido de `bench_bitcoin`. Se decide correr `bitcoind` real con `-assumevalid=0` (Escenario B) contra mainnet, con `-prune=5000` para acotar disco (875GB libres, no hace falta la cadena sin podar) y `bpftrace` para captura continua de larga duración (un `perf record` de eventos crudos sería inviable en tamaño para un IBD de posibles días — ver journal previo, 60s ya generaban ~50MB).
+
+Diseño: `uprobe` en `Chainstate::ConnectBlock` (símbolo `_ZN10Chainstate12ConnectBlockERK6CBlockR20BlockValidationStateP11CBlockIndexR15CCoinsViewCacheb`, igual en `bitcoind` y `bench_bitcoin`) como marcador de inicio de bloque, y acumulación de tiempo de CPU por worker vía `sched:sched_switch` entre marcadores. Cada bloque emite una línea compacta `BLOCK <n> <tid>=<ns> ...`; el análisis de distribución (percentiles, histograma de `max_share` = fracción del bloque hecha por el worker más ocupado) se delega a un script Python externo (`analyze_ibd_spread.py`) que puede correr en streaming sobre el log mientras el nodo sigue sincronizando.
+
+A diferencia del trabajo con `bench_bitcoin`, `bitcoind` ya expone `-par`, `-assumevalid` y `-prune` como argumentos estándar (`src/init.cpp:513,539,548`) — no hace falta parchear código fuente.
+
+### Bug: filtro de nombre de hilo incorrecto (`scriptch` vs `b-scriptch`)
+
+Primer test de validación con `-stopatheight=3000`: el uprobe en `ConnectBlock` funcionaba perfectamente (3001 líneas `BLOCK`, contador correcto), pero **ningún** worker aparecía nunca en `@work` — el mapa salía vacío en todas las líneas. Los bloques 0-3000 son de 2009 (prácticamente solo coinbase), así que se sospechó inicialmente que simplemente no había trabajo que verificar.
+
+Se repitió el test extendiendo a `-stopatheight=200000` (~2012, ya con volumen de transacciones real) reutilizando el mismo datadir para no re-descargar desde génesis. El resultado fue el mismo: 197000 bloques procesados, `@work` completamente vacío en los 197000. Esto ya no encajaba con "bloques sin trabajo" — a esa altura hay cientos de tx por bloque.
+
+**Causa raíz:** el filtro de bpftrace comparaba `args->prev_comm`/`args->next_comm` contra el literal `"scriptch"` (8 caracteres, sin prefijo). La suposición (registrada erróneamente en una sesión anterior) era que el prefijo `"b-"` en los nombres de hilo (`b-scriptch.NN`) lo añadía el arnés de test/bench específicamente. Es falso: `util::ThreadRename` en `src/util/threadnames.cpp:58` antepone `"b-"` **incondicionalmente** a todo nombre de hilo visible por el SO (`SetThreadName(("b-" + name).c_str())`) — es una convención global de Bitcoin Core (prefijo "b-" = "bitcoin"), no algo específico del arnés de bench. El nombre interno sin prefijo (`SetInternalName`) solo se usa para logging, no es lo que aparece en `/proc/<pid>/task/<tid>/comm` ni en `args->comm` del tracepoint `sched_switch`.
+
+**Fix:** cambiar el filtro a `strncmp(args->prev_comm, "b-scriptch", 10) == 0` (y equivalente para `next_comm`). Corregido en `ibd_block_spread.bt`.
+
+**Lección:** verificar el nombre de hilo real contra `/proc/<pid>/task/*/comm` (o el log `Script verification uses N additional threads` + inspección directa) antes de asumir el formato de nombre en un filtro de bpftrace, en vez de basarse en una nota de sesión anterior sin recomprobar contra el código fuente actual.
+
+### Validación tras el fix
+
+Con el filtro `"b-scriptch"` corregido, test de ~9833 bloques reales (~2009-2010) mostró `@work` con datos en todas las líneas. Métrica inicial: por bloque, desviación del worker más cargado/ocioso respecto a la media ideal (100/N%). Resultado: 90.7% de los bloques con desviación <5pp, cola pequeña de casos extremos (0.2% de bloques con >20pp, máximo 46.5pp en el peor caso).
+
+### Iteración del diseño de métricas (script `analyze_ibd_spread.py`)
+
+Tras revisar los primeros resultados con el usuario, dos mejoras al análisis:
+
+**1. No descartar los workers intermedios.** La primera versión solo guardaba 2 valores por bloque (el más cargado y el más ocioso), tirando el resto. Se cambió a acumular la desviación de **todos** los workers en cada bloque (9 muestras/bloque en vez de 2), dando ~88k muestras worker-bloque sobre 9833 bloques. Resultado: 94.7% de las muestras entre -5pp y +5pp, colas simétricas pequeñas — confirma con mucha más resolución que el desbalance fuerte es la excepción.
+
+**2. Identidad por rango de velocidad, no por thread id — para tener una métrica agregable globalmente.** Insight del usuario: promediar por `tid` a lo largo de muchos bloques converge a la media ideal (es el mismo efecto de "ley de grandes números" que ya hizo engañoso el CV global de `bench_bitcoin` — qué hilo gana varía aleatoriamente bloque a bloque, así que promediar por identidad de hilo lo lava todo). En cambio, ordenar los workers de cada bloque por tiempo de ejecución (rank 1 = el que más trabajó ese bloque, rank N = el que menos) y promediar **por rank** a través de miles de bloques SÍ converge a un valor estable y no-uniforme, porque siempre hay estructuralmente un "más ocupado" y un "más ocioso" en cada bloque — es un estadístico de orden, no una identidad arbitraria.
+
+Con los ~9833 bloques de test: rank 1 (más ocupado) promedia +2.7pp sobre la media ideal, rank 9 (más ocioso) promedia -2.6pp, con una gradación suave y monótona entre medio (ver `analyze_ibd_spread.py::print_rank_table`). Esta tabla es estable bajo agregación (a diferencia de la agregación por tid) — es la métrica candidata para reportar de forma resumida sobre ventanas de 100k bloques en el IBD completo, sin perder la señal de desbalance estructural.
+
+### Siguiente paso
+
+Lanzar el IBD completo desde génesis en `~/ibd-profiling-datadir` (sin `-stopatheight`), capturando en `~/ibd_full.log`, y generar el reporte cada 100k bloques con `analyze_ibd_spread.py --bucket-size 100000` — viendo si la gradación por rank (y la cola de la distribución completa) se mantiene igual o se ensancha a medida que los bloques reales tienen más transacciones (post-2013).

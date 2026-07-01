@@ -1,0 +1,34 @@
+/*
+ * Per-block CheckQueue worker imbalance capture for real IBD.
+ * See checkqueue-profiling-journal.md for background.
+ *
+ * Marks block boundaries with a uprobe on Chainstate::ConnectBlock entry,
+ * and accumulates CPU time per "scriptch.NN" worker thread between
+ * boundaries using sched_switch. Emits one compact line per block:
+ *   BLOCK <n> <tid>=<ns> <tid>=<ns> ...
+ * All distribution analysis (percentiles, histograms) is left to
+ * analyze_ibd_spread.py, which consumes this log.
+ */
+
+uprobe:/home/arejula27/workspaces/bitcoin/build/bin/bitcoind:_ZN10Chainstate12ConnectBlockERK6CBlockR20BlockValidationStateP11CBlockIndexR15CCoinsViewCacheb
+{
+    printf("BLOCK %d ", @block_count);
+    for ($kv : @work) {
+        printf("%d=%d ", $kv.0, $kv.1);
+    }
+    printf("\n");
+    clear(@work);
+    @block_count++;
+}
+
+tracepoint:sched:sched_switch
+/strncmp(args->prev_comm, "b-scriptch", 10) == 0/
+{
+    @work[args->prev_pid] += nsecs - @start[args->prev_pid];
+}
+
+tracepoint:sched:sched_switch
+/strncmp(args->next_comm, "b-scriptch", 10) == 0/
+{
+    @start[args->next_pid] = nsecs;
+}
