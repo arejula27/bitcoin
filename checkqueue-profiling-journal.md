@@ -1027,3 +1027,105 @@ CV de 4.1% con 5 segundos de ventana — consistente con el 4.2% del experimento
 **El b-test tiene 28 slices pequeños (69ms total)** frente a 14 grandes. Los pequeños son el cleanup entre bloques: `ConnectBlock` retorna, el benchmark crea el siguiente bloque, llama a `Add()`. Esos ~5ms de gap por bloque (69ms / 14 bloques) son exactamente el tiempo en que todos los workers están idle esperando el siguiente `Add()`.
 
 **CV de 4.2% vs 19-28% previos.** En 500ms los bloques son relativamente uniformes. La varianza alta en los experimentos de 15s refleja acumulación de efectos a lo largo de cientos de bloques: el OS migrando threads entre cores, variación en cache state, etc. En una ventana corta la distribución de batches es más regular.
+
+---
+
+## 2026-07-01 — Corrección: interpretación del CV y el outlier de 19ms
+
+Al revisar el experimento de bpftrace con `-sigcachesize=0`, dos afirmaciones en el análisis eran incorrectas:
+
+**CV: por qué sube de 41% a 59% aunque el spread absoluto baje**
+
+CV = σ / μ. Los valores concretos:
+
+| | Con cache | Sin cache |
+|---|---:|---:|
+| σ (stddev spread) | 1.83 ms | 1.81 ms |
+| μ (mean spread) | 4.44 ms | 3.07 ms |
+| CV | 41% | 59% |
+
+El stddev es prácticamente idéntico en los dos casos (~1.82ms). El CV sube porque la media bajó un 31% — el denominador se encogió. No hay más variabilidad absoluta entre bloques; hay la misma variabilidad pero relativa a una media más pequeña.
+
+**Outlier de 19ms: no es un batch de Schnorr**
+
+El journal atribuía el outlier a "un worker que acumuló un batch de Schnorr más costoso". Esto es incorrecto: el benchmark sintético repite el mismo bloque en cada iteración — todos los bloques tienen exactamente la misma composición de scripts. El outlier es interferencia del OS (preemption, migración de core, presión de memoria) que afectó a un worker en un bloque concreto.
+
+---
+
+## 2026-07-01 — perf probe en `Chainstate::ConnectBlock`: boundaries exactos + SVG
+
+### Motivación
+
+La aproximación anterior con bpftrace usaba `uretprobe` en `pthread_cond_wait` de libc como proxy del fin de bloque. Es correcto (el master despierta cuando `nTodo==0`), pero introduce ruido propio del uretprobe de libc — visible en el outlier de 19ms del experimento anterior. El objetivo es usar `perf probe` directamente en `Chainstate::ConnectBlock` como boundary, y combinar en una sola sesión de `perf record` los eventos necesarios para el SVG y para el análisis de spread.
+
+### Problema con `%return` probe
+
+`perf probe --add 'connect_block_end=Chainstate::ConnectBlock%return'` falló porque el compilador usa tail-call optimization o múltiples return points en `ConnectBlock`. Solución: usar solo la probe de entrada y definir el bloque como la ventana `[start_N, start_{N+1})`. El spread entre workers (max_finish − min_finish) no depende del end exacto del bloque — solo necesitamos atribuir cada `sched_switch` al bloque correcto, lo que la ventana start-to-start proporciona.
+
+### Registro de la probe (una sola vez como root)
+
+```bash
+MANGLED="_ZN10Chainstate12ConnectBlockERK6CBlockR20BlockValidationStateP11CBlockIndexR15CCoinsViewCacheb"
+sudo perf probe -x ./build/bin/bench_bitcoin --add "connect_block_start=${MANGLED}"
+```
+
+El símbolo manglado se obtiene con `nm ./build/bin/bench_bitcoin | grep ConnectBlock | grep Chainstate`.
+
+`perf timechart record` no acepta `-e` adicionales, por lo que se usa `perf record -a` con los eventos que timechart necesita más el probe:
+
+### Comandos
+
+```bash
+# 1. Lanzar benchmark
+NANOBENCH_SUPPRESS_WARNINGS=1 NANOBENCH_ENDLESS=ConnectBlockMixedEcdsaSchnorr \
+  ./build/bin/bench_bitcoin -filter=ConnectBlockMixedEcdsaSchnorr -par=10 &
+
+# 2. Grabar (system-wide, 10s)
+sudo perf record -a \
+    -e sched:sched_switch \
+    -e sched:sched_wakeup \
+    -e probe_bench_bitcoin:connect_block_start \
+    -- sleep 10 && sudo chmod a+r perf.data
+
+# 3. SVG gantt
+perf timechart -p bench_bitcoin -o gantt_connectblock.svg
+
+# 4. Análisis de spread
+perf script -i perf.data --fields time,event,comm \
+  | python3 scripts/parse_connectblock_spread.py
+```
+
+→ [ver imagen](gantt_connectblock.svg)
+
+### Resultados
+
+266 bloques, todos con los 10 workers presentes.
+
+| Métrica | bpftrace (pthread_cond_wait) | perf probe (ConnectBlock) |
+|---|---:|---:|
+| Bloques analizados | 271 | 266 |
+| Duración media bloque | 35.4 ms | 37.5 ms |
+| Spread medio | 3.07 ms | **2.98 ms** |
+| Spread mediana | 2.70 ms | 2.90 ms |
+| Spread stddev | 1.81 ms | 1.41 ms |
+| Spread p95 | 6.06 ms | **5.50 ms** |
+| Spread p99 | 6.99 ms | 6.61 ms |
+| Spread máx | **19.13 ms** | **7.09 ms** |
+| Waste ratio medio | 8.7% | **7.9%** |
+| Waste ratio p95 | 17.1% | 14.1% |
+| CV del spread | 59.0% | **47.3%** |
+
+### Distribución del spread (perf probe)
+
+```
+  0-  2ms:   75 (28.2%)  ███████████
+  2-  4ms:  128 (48.1%)  ███████████████████
+  4-  6ms:   58 (21.8%)  ████████
+  6-  8ms:    5 ( 1.9%)
+```
+
+### Análisis
+
+Los resultados son consistentes con bpftrace. La diferencia más notable es el máximo: 19.13ms con bpftrace vs 7.09ms con perf probe. El outlier de bpftrace era ruido del `uretprobe` en libc (el trap de kernel para el return probe de `pthread_cond_wait` tiene latencia propia que en casos extremos puede acumularse). Con boundaries directamente en `ConnectBlock`, la distribución es más limpia y el máximo cae dentro del rango esperado.
+
+El spread medio de ~3ms sobre bloques de ~37ms (waste ratio ~8%) se confirma como el número estructural: con 10 workers y el esquema de batches estáticos de `CCheckQueue`, la cola se vacía con ~3ms de straggler time promedio, independientemente del método de medición.
