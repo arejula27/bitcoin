@@ -1129,3 +1129,31 @@ perf script -i perf.data --fields time,event,comm \
 Los resultados son consistentes con bpftrace. La diferencia más notable es el máximo: 19.13ms con bpftrace vs 7.09ms con perf probe. El outlier de bpftrace era ruido del `uretprobe` en libc (el trap de kernel para el return probe de `pthread_cond_wait` tiene latencia propia que en casos extremos puede acumularse). Con boundaries directamente en `ConnectBlock`, la distribución es más limpia y el máximo cae dentro del rango esperado.
 
 El spread medio de ~3ms sobre bloques de ~37ms (waste ratio ~8%) se confirma como el número estructural: con 10 workers y el esquema de batches estáticos de `CCheckQueue`, la cola se vacía con ~3ms de straggler time promedio, independientemente del método de medición.
+
+---
+
+## Conclusión: ¿es uniforme el trabajo? ¿merece la pena cambiar el scheduler?
+
+### Uniformidad
+
+**A nivel global: sí.** CV de runtime entre workers ~4% en ventanas de 5-10s. Los workers ejecutan prácticamente el mismo tiempo total.
+
+**A nivel de bloque: hay straggler inevitable.** Spread medio de ~3ms por bloque (8% del tiempo de bloque). No es un problema de scheduling — es aritmética de batches: con ~16 batches para 10 workers, la última ronda de despacho siempre deja algún worker con un batch mientras los demás ya terminaron.
+
+### ¿Vale la pena cambiar el scheduler?
+
+No, por las razones siguientes:
+
+**La cola con lock ya hace lo correcto.** Dispatch dinámico: los workers toman trabajo hasta que no queda nada. Esto ya minimiza el desbalance estructural. El idle es ≈0% y la contención del mutex es insignificante — confirmado por medición directa.
+
+**Las alternativas no atacan el problema real:**
+- *Lock-free queue*: elimina contención del mutex, que ya es despreciable. Coste de implementación alto, ganancia nula.
+- *Work stealing*: útil cuando hay desbalance estructural persistente. Aquí el desbalance es 1 batch al final de cada bloque — work stealing no lo elimina, solo lo redistribuye.
+- *Batch size menor*: reduciría el spread (el último batch pesa menos como fracción del total), pero aumenta el número de adquisiciones del lock por bloque. Trade-off que requeriría medición.
+
+**El margen real está entre bloques, no dentro.** El benchmark muestra ~5ms de gap entre llamadas a `ConnectBlock` donde todos los workers están ociosos. En producción ese tiempo corresponde al setup previo al lanzamiento de checks. Si ese overhead es significativo en IBD, su impacto supera al spread intra-bloque.
+
+### Líneas de trabajo pendientes
+
+1. **Bloques reales heterogéneos**: el benchmark sintético repite el mismo bloque. Con bloques reales (composición variable de script types, número de inputs distinto en cada bloque), el spread podría ser estructuralmente mayor. Requiere IBD parcial o un benchmark paramétrico basado en estadísticas de mainnet.
+2. **Gap entre bloques**: medir cuánto tiempo pasan los workers ociosos entre `ConnectBlock` calls en IBD real y si escala con el número de workers.
