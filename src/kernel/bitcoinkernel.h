@@ -342,6 +342,31 @@ typedef uint8_t btck_Warning;
 #define btck_Warning_UNKNOWN_NEW_RULES_ACTIVATED ((btck_Warning)(0))
 #define btck_Warning_LARGE_WORK_INVALID_CHAIN ((btck_Warning)(1))
 
+/** Possible fatal error types issued by the kernel library. */
+typedef uint8_t btck_FatalError;
+#define btck_FatalError_ACTIVATE_BEST_CHAINS_FAILED ((btck_FatalError)(0))
+#define btck_FatalError_ASSUMEUTXO_DATA_NOT_FOUND ((btck_FatalError)(1))
+#define btck_FatalError_BLOCK_DISCONNECT_FAILED ((btck_FatalError)(2))
+#define btck_FatalError_BLOCK_FILE_CLOSE_FAILED ((btck_FatalError)(3))
+#define btck_FatalError_BLOCK_READ_FAILED ((btck_FatalError)(4))
+#define btck_FatalError_BLOCK_WRITE_FAILED ((btck_FatalError)(5))
+#define btck_FatalError_CORRUPT_BLOCK_FOUND ((btck_FatalError)(6))
+#define btck_FatalError_DISK_SPACE_TOO_LOW ((btck_FatalError)(7))
+#define btck_FatalError_FAILED_TO_START_INDEXES ((btck_FatalError)(8))
+#define btck_FatalError_SNAPSHOT_CHAINSTATE_DIR_REMOVAL_FAILED ((btck_FatalError)(9))
+#define btck_FatalError_SNAPSHOT_CHAINSTATE_RENAME_FAILED ((btck_FatalError)(10))
+#define btck_FatalError_SNAPSHOT_VALIDATION_FAILED ((btck_FatalError)(11))
+#define btck_FatalError_SYSTEM_ERROR_WHILE_FLUSHING ((btck_FatalError)(12))
+#define btck_FatalError_SYSTEM_ERROR_WHILE_LOADING_EXTERNAL_BLOCK_FILE ((btck_FatalError)(13))
+#define btck_FatalError_SYSTEM_ERROR_WHILE_SAVING_BLOCK ((btck_FatalError)(14))
+#define btck_FatalError_UNDO_DATA_WRITE_FAILED ((btck_FatalError)(15))
+#define btck_FatalError_UNDO_FILE_CLOSE_FAILED ((btck_FatalError)(16))
+
+/** Possible flush error types issued by the kernel library. */
+typedef uint8_t btck_FlushError;
+#define btck_FlushError_BLOCK_FILE_FLUSH_FAILED ((btck_FlushError)(0))
+#define btck_FlushError_UNDO_FILE_FLUSH_FAILED ((btck_FlushError)(1))
+
 /** Callback function types */
 
 /**
@@ -363,8 +388,8 @@ typedef void (*btck_NotifyHeaderTip)(void* user_data, btck_SynchronizationState 
 typedef void (*btck_NotifyProgress)(void* user_data, const char* title, size_t title_len, int progress_percent, int resume_possible);
 typedef void (*btck_NotifyWarningSet)(void* user_data, btck_Warning warning, const char* message, size_t message_len);
 typedef void (*btck_NotifyWarningUnset)(void* user_data, btck_Warning warning);
-typedef void (*btck_NotifyFlushError)(void* user_data, const char* message, size_t message_len);
-typedef void (*btck_NotifyFatalError)(void* user_data, const char* message, size_t message_len);
+typedef void (*btck_NotifyFlushError)(void* user_data, btck_FlushError error, const char* message, size_t message_len);
+typedef void (*btck_NotifyFatalError)(void* user_data, btck_FatalError error, const char* message, size_t message_len);
 
 /**
  * Function signatures for the validation interface.

@@ -235,6 +235,58 @@ btck_Warning cast_btck_warning(kernel::Warning warning)
     assert(false);
 }
 
+btck_FatalError cast_btck_fatal_error(kernel::FatalError error)
+{
+    switch (error) {
+    case kernel::FatalError::ACTIVATE_BEST_CHAINS_FAILED:
+        return btck_FatalError_ACTIVATE_BEST_CHAINS_FAILED;
+    case kernel::FatalError::ASSUMEUTXO_DATA_NOT_FOUND:
+        return btck_FatalError_ASSUMEUTXO_DATA_NOT_FOUND;
+    case kernel::FatalError::BLOCK_DISCONNECT_FAILED:
+        return btck_FatalError_BLOCK_DISCONNECT_FAILED;
+    case kernel::FatalError::BLOCK_FILE_CLOSE_FAILED:
+        return btck_FatalError_BLOCK_FILE_CLOSE_FAILED;
+    case kernel::FatalError::BLOCK_READ_FAILED:
+        return btck_FatalError_BLOCK_READ_FAILED;
+    case kernel::FatalError::BLOCK_WRITE_FAILED:
+        return btck_FatalError_BLOCK_WRITE_FAILED;
+    case kernel::FatalError::CORRUPT_BLOCK_FOUND:
+        return btck_FatalError_CORRUPT_BLOCK_FOUND;
+    case kernel::FatalError::DISK_SPACE_TOO_LOW:
+        return btck_FatalError_DISK_SPACE_TOO_LOW;
+    case kernel::FatalError::FAILED_TO_START_INDEXES:
+        return btck_FatalError_FAILED_TO_START_INDEXES;
+    case kernel::FatalError::SNAPSHOT_CHAINSTATE_DIR_REMOVAL_FAILED:
+        return btck_FatalError_SNAPSHOT_CHAINSTATE_DIR_REMOVAL_FAILED;
+    case kernel::FatalError::SNAPSHOT_CHAINSTATE_RENAME_FAILED:
+        return btck_FatalError_SNAPSHOT_CHAINSTATE_RENAME_FAILED;
+    case kernel::FatalError::SNAPSHOT_VALIDATION_FAILED:
+        return btck_FatalError_SNAPSHOT_VALIDATION_FAILED;
+    case kernel::FatalError::SYSTEM_ERROR_WHILE_FLUSHING:
+        return btck_FatalError_SYSTEM_ERROR_WHILE_FLUSHING;
+    case kernel::FatalError::SYSTEM_ERROR_WHILE_LOADING_EXTERNAL_BLOCK_FILE:
+        return btck_FatalError_SYSTEM_ERROR_WHILE_LOADING_EXTERNAL_BLOCK_FILE;
+    case kernel::FatalError::SYSTEM_ERROR_WHILE_SAVING_BLOCK:
+        return btck_FatalError_SYSTEM_ERROR_WHILE_SAVING_BLOCK;
+    case kernel::FatalError::UNDO_DATA_WRITE_FAILED:
+        return btck_FatalError_UNDO_DATA_WRITE_FAILED;
+    case kernel::FatalError::UNDO_FILE_CLOSE_FAILED:
+        return btck_FatalError_UNDO_FILE_CLOSE_FAILED;
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
+
+btck_FlushError cast_btck_flush_error(kernel::FlushError error)
+{
+    switch (error) {
+    case kernel::FlushError::BLOCK_FILE_FLUSH_FAILED:
+        return btck_FlushError_BLOCK_FILE_FLUSH_FAILED;
+    case kernel::FlushError::UNDO_FILE_FLUSH_FAILED:
+        return btck_FlushError_UNDO_FILE_FLUSH_FAILED;
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
+
 struct LoggingConnection {
     std::unique_ptr<std::list<std::function<void(const std::string&)>>::iterator> m_connection;
     void* m_user_data;
@@ -328,7 +380,7 @@ public:
     {
         if (m_cbs.flush_error) {
             const std::string_view message{kernel::FlushErrorDescription(error)};
-            m_cbs.flush_error(m_cbs.user_data, message.data(), message.size());
+            m_cbs.flush_error(m_cbs.user_data, cast_btck_flush_error(error), message.data(), message.size());
         }
     }
     void fatalError(kernel::FatalError error, std::vector<std::string> args) override
@@ -336,7 +388,7 @@ public:
         if (m_cbs.fatal_error) {
             std::string message{kernel::FatalErrorDescription(error)};
             for (const auto& arg : args) message += " " + arg;
-            m_cbs.fatal_error(m_cbs.user_data, message.c_str(), message.size());
+            m_cbs.fatal_error(m_cbs.user_data, cast_btck_fatal_error(error), message.c_str(), message.size());
         }
     }
 };
