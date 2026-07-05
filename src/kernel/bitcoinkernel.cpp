@@ -16,6 +16,7 @@
 #include <kernel/checks.h>
 #include <kernel/context.h>
 #include <kernel/notifications_interface.h>
+#include <kernel/error.h>
 #include <kernel/warning.h>
 #include <logging.h>
 #include <node/blockstorage.h>
@@ -49,6 +50,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -322,13 +324,20 @@ public:
     {
         if (m_cbs.warning_unset) m_cbs.warning_unset(m_cbs.user_data, cast_btck_warning(id));
     }
-    void flushError(const bilingual_str& message) override
+    void flushError(kernel::FlushError error) override
     {
-        if (m_cbs.flush_error) m_cbs.flush_error(m_cbs.user_data, message.original.c_str(), message.original.length());
+        if (m_cbs.flush_error) {
+            const std::string_view message{kernel::FlushErrorDescription(error)};
+            m_cbs.flush_error(m_cbs.user_data, message.data(), message.size());
+        }
     }
-    void fatalError(const bilingual_str& message) override
+    void fatalError(kernel::FatalError error, std::vector<std::string> args) override
     {
-        if (m_cbs.fatal_error) m_cbs.fatal_error(m_cbs.user_data, message.original.c_str(), message.original.length());
+        if (m_cbs.fatal_error) {
+            std::string message{kernel::FatalErrorDescription(error)};
+            for (const auto& arg : args) message += " " + arg;
+            m_cbs.fatal_error(m_cbs.user_data, message.c_str(), message.size());
+        }
     }
 };
 

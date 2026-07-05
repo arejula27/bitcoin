@@ -13,6 +13,8 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <string>
+#include <vector>
 
 class ArgsManager;
 class CBlockIndex;
@@ -21,6 +23,8 @@ struct bilingual_str;
 
 namespace kernel {
 enum class Warning;
+enum class FatalError;
+enum class FlushError;
 } // namespace kernel
 
 namespace node {
@@ -56,9 +60,9 @@ public:
 
     void warningUnset(kernel::Warning id) override;
 
-    void flushError(const bilingual_str& message) override;
+    void flushError(kernel::FlushError error) override;
 
-    void fatalError(const bilingual_str& message) override;
+    void fatalError(kernel::FatalError error, std::vector<std::string> args) override;
 
     void setChainstateLoaded(bool chainstate_loaded) EXCLUSIVE_LOCKS_REQUIRED(!m_tip_block_mutex) {
         LOCK(m_tip_block_mutex);
