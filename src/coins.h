@@ -715,6 +715,12 @@ private:
 protected:
     void Reset() noexcept override
     {
+        // Only log if a fetch was actually in flight. Reset() also runs (as a no-op) after every
+        // successful Flush(), where m_futures is already empty and there is nothing to report.
+        if (!m_futures.empty()) {
+            LogDebug(BCLog::COINDB, "Block %s: parallel prevout prefetch consumed %u of %u block input prevouts before the block was rejected\n",
+                     GetBestBlock().ToString(), m_input_tail, (unsigned int)m_inputs.size());
+        }
         StopFetching();
         CCoinsViewCache::Reset();
     }
@@ -734,6 +740,8 @@ public:
 
     void Flush(bool reallocate_cache = true) override
     {
+        LogDebug(BCLog::COINDB, "Block %s: parallel prevout prefetch consumed %u of %u block input prevouts\n",
+                 GetBestBlock().ToString(), m_input_tail, (unsigned int)m_inputs.size());
         if (!Assume(AllInputsConsumed())) {
             LogWarning("Block %s input prevout prefetch queue was not fully consumed; inputs were accessed out of order, so prefetching degraded to serial lookups for this block.", GetBestBlock().ToString());
         }
