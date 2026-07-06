@@ -8,6 +8,7 @@ import time
 
 from test_framework.blocktools import (
     add_witness_commitment,
+    COINBASE_MATURITY,
     create_block,
     create_coinbase,
     create_tx_with_script,
@@ -95,6 +96,9 @@ class FullBlockTest(BitcoinTestFramework):
             # Override the functional-test default of 1 thread to exercise the multi-threaded
             # prevout prefetching path in this block-heavy test.
             '-prevoutfetchthreads=8',
+            # Surface the CoinsViewOverlay consumed-inputs debug log so tests below can
+            # assert on it to detect fetch/validation desyncs.
+            '-debug=coindb',
         ]]
 
     def add_options(self, parser):
@@ -332,7 +336,11 @@ class FullBlockTest(BitcoinTestFramework):
         self.log.info("Reject a block spending an immature coinbase.")
         self.move_tip(15)
         b20 = self.next_block(20, spend=out[7])
-        self.send_blocks([b20], success=False, reject_reason='bad-txns-premature-spend-of-coinbase', reconnect=True)
+        # b20's single input is still fed to the parallel prevout prefetch queue before the
+        # coinbase-maturity check aborts validation. Assert the debug log reports it was consumed
+        # and the block's rejection didn't leave the fetch queue and validation desynced.
+        with self.nodes[0].assert_debug_log(["consumed 1 of 1 block input prevouts before the block was rejected"]):
+            self.send_blocks([b20], success=False, reject_reason='bad-txns-premature-spend-of-coinbase', reconnect=True)
 
         # Attempt to spend a coinbase at depth too low (on a fork this time)
         #     genesis -> b1 (0) -> b2 (1) -> b5 (2) -> b6  (3)
@@ -1330,6 +1338,29 @@ class FullBlockTest(BitcoinTestFramework):
             self.send_blocks([block], False, force_send=True)
             block = self.next_block(chain1_tip + 2)
             self.send_blocks([block], True, timeout=2440)
+
+        self.log.info("Test parallel prevout prefetch debug log reports full consumption for a valid, multi-input block")
+        NUM_PREFETCH_LOG_INPUTS = 8
+        # Mine and mature a handful of independent coinbases so they can be spent together,
+        # unchained, in a single block below.
+        coinbases = []
+        for i in range(NUM_PREFETCH_LOG_INPUTS):
+            b = self.next_block(f"prefetch_log_coinbase_{i}")
+            self.send_blocks([b])
+            coinbases.append(b.vtx[0])
+        for i in range(COINBASE_MATURITY):
+            self.send_blocks([self.next_block(f"prefetch_log_maturity_{i}")])
+
+        # Restart with an empty coins cache so the prefetch workers below must read these
+        # prevouts from the chainstate LevelDB rather than serve them from an already-warm cache.
+        self.restart_node(0, extra_args=self.extra_args[0])
+        self.reconnect_p2p()
+
+        txs = [self.create_and_sign_transaction(coinbase, 1) for coinbase in coinbases]
+        prefetch_log_block = self.next_block("prefetch_log_valid")
+        prefetch_log_block = self.update_block("prefetch_log_valid", txs)
+        with self.nodes[0].assert_debug_log([f"consumed {NUM_PREFETCH_LOG_INPUTS} of {NUM_PREFETCH_LOG_INPUTS} block input prevouts"]):
+            self.send_blocks([prefetch_log_block], True)
 
     # Helper methods
     ################
