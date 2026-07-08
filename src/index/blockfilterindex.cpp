@@ -261,6 +261,15 @@ size_t BlockFilterIndex::WriteFilterToDisk(FlatFilePos& pos, const BlockFilter& 
 
     *m_write_file << filter.GetBlockHash() << filter.GetEncodedFilter();
 
+    // Push this block's write out of the process' buffer immediately (cheap: no disk sync,
+    // unlike Commit()). Without this, a genuine I/O error could go undetected for several
+    // blocks (until the next Commit() or rollover), and a concurrent reader could briefly see
+    // this block's filter data as missing/incomplete on disk.
+    if (!m_write_file->Flush()) {
+        LogError("Failed to flush filter file %d", pos.nFile);
+        return 0;
+    }
+
     return data_size;
 }
 

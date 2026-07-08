@@ -131,6 +131,11 @@ bool AutoFile::Commit()
     return ::FileCommit(m_file);
 }
 
+bool AutoFile::Flush()
+{
+    return std::fflush(m_file) == 0;
+}
+
 bool AutoFile::Truncate(unsigned size)
 {
     m_was_written = true;

@@ -465,6 +465,11 @@ public:
     /** Wrapper around FileCommit(). */
     bool Commit();
 
+    /** Flush buffered writes to the OS (fflush), without forcing a physical disk sync like
+     * Commit() does. Makes previously written data visible to other readers of the same file
+     * and surfaces any pending write error immediately, at a fraction of Commit()'s cost. */
+    bool Flush();
+
     /** Wrapper around TruncateFile(). */
     bool Truncate(unsigned size);
 
