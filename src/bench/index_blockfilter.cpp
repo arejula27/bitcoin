@@ -4,6 +4,7 @@
 
 #include <addresstype.h>
 #include <bench/bench.h>
+#include <bench/index_sync_util.h>
 #include <blockfilter.h>
 #include <chain.h>
 #include <index/base.h>
@@ -60,3 +61,23 @@ static void BlockFilterIndexSync(benchmark::Bench& bench)
 }
 
 BENCHMARK(BlockFilterIndexSync);
+
+// Block filter index sync benchmark using realistic multi-input/multi-output
+// blocks (via the shared ExtendChainWithSpends/BenchIndexSync helpers, see
+// src/bench/index_sync_util.h) instead of coinbase-only ones. Unlike
+// BlockFilterIndexSync above, filters here are computed over many real
+// outputs per block, which is needed to meaningfully measure changes to the
+// per-block filter-hashing/encoding cost (e.g. redundant BlockFilter::GetHash()
+// calls, or filter file I/O patterns).
+static void BlockFilterIndexSyncRealistic(benchmark::Bench& bench)
+{
+    const auto test_setup = MakeNoLogFileContext<TestChain100Setup>();
+    ExtendChainWithSpends(*test_setup, /*num_blocks=*/20, /*num_txs_per_block=*/500);
+
+    BenchIndexSync(bench, *test_setup, [&] {
+        return std::make_unique<BlockFilterIndex>(interfaces::MakeChain(test_setup->m_node), BlockFilterType::BASIC,
+                                                   /*n_cache_size=*/0, /*f_memory=*/false, /*f_wipe=*/true);
+    });
+}
+
+BENCHMARK(BlockFilterIndexSyncRealistic);
