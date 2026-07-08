@@ -97,6 +97,11 @@ BlockFilterIndex::BlockFilterIndex(std::unique_ptr<interfaces::Chain> chain, Blo
     m_filter_fileseq = std::make_unique<FlatFileSeq>(std::move(path), "fltr", FLTR_FILE_CHUNK_SIZE);
 }
 
+BlockFilterIndex::~BlockFilterIndex()
+{
+    (void)CloseWriteHandle();
+}
+
 interfaces::Chain::NotifyOptions BlockFilterIndex::CustomOptions()
 {
     interfaces::Chain::NotifyOptions options;
@@ -137,24 +142,61 @@ bool BlockFilterIndex::CustomCommit(CDBBatch& batch)
 {
     const FlatFilePos& pos = m_next_filter_pos;
 
-    // Flush current filter file to disk.
-    AutoFile file{m_filter_fileseq->Open(pos)};
-    if (file.IsNull()) {
-        LogError("Failed to open filter file %d", pos.nFile);
+    // Flush current filter file to disk, keeping the handle open for subsequent writes instead
+    // of closing and reopening it on the next block.
+    if (!EnsureWriteHandleOpen(pos)) {
         return false;
     }
-    if (!file.Commit()) {
+    if (!m_write_file->Commit()) {
         LogError("Failed to commit filter file %d", pos.nFile);
-        (void)file.fclose();
-        return false;
-    }
-    if (file.fclose() != 0) {
-        LogError("Failed to close filter file %d after commit: %s", pos.nFile, SysErrorString(errno));
         return false;
     }
 
     batch.Write(DB_FILTER_POS, pos);
     return true;
+}
+
+bool BlockFilterIndex::EnsureWriteHandleOpen(const FlatFilePos& pos)
+{
+    if (m_write_file && m_write_file_no == pos.nFile) return true;
+
+    // Switching files without having gone through CloseWriteHandle() first would leak/desync the
+    // previous handle; callers are expected to have finalized it already.
+    if (m_write_file) {
+        LogError("Filter file handle for file %d still open while opening file %d", m_write_file_no, pos.nFile);
+        (void)CloseWriteHandle();
+    }
+
+    m_write_file.emplace(m_filter_fileseq->Open(pos));
+    if (m_write_file->IsNull()) {
+        LogError("Failed to open filter file %d", pos.nFile);
+        m_write_file.reset();
+        return false;
+    }
+    m_write_file_no = pos.nFile;
+    return true;
+}
+
+bool BlockFilterIndex::CloseWriteHandle(std::optional<unsigned> truncate_to)
+{
+    if (!m_write_file) return true;
+
+    bool ok{true};
+    if (truncate_to && !m_write_file->Truncate(*truncate_to)) {
+        LogError("Failed to truncate filter file %d", m_write_file_no);
+        ok = false;
+    }
+    if (ok && !m_write_file->Commit()) {
+        LogError("Failed to commit filter file %d", m_write_file_no);
+        ok = false;
+    }
+    if (m_write_file->fclose() != 0) {
+        LogError("Failed to close filter file %d: %s", m_write_file_no, SysErrorString(errno));
+        ok = false;
+    }
+    m_write_file.reset();
+    m_write_file_no = -1;
+    return ok;
 }
 
 bool BlockFilterIndex::ReadFilterFromDisk(const FlatFilePos& pos, const uint256& hash, BlockFilter& filter) const
@@ -191,24 +233,13 @@ size_t BlockFilterIndex::WriteFilterToDisk(FlatFilePos& pos, const BlockFilter& 
         GetSerializeSize(filter.GetBlockHash()) +
         GetSerializeSize(filter.GetEncodedFilter())};
 
-    // If writing the filter would overflow the file, flush and move to the next one.
+    // If writing the filter would overflow the file, finalize the current file and move to the
+    // next one.
     if (pos.nPos + data_size > MAX_FLTR_FILE_SIZE) {
-        AutoFile last_file{m_filter_fileseq->Open(pos)};
-        if (last_file.IsNull()) {
-            LogError("Failed to open filter file %d", pos.nFile);
+        if (!EnsureWriteHandleOpen(pos)) {
             return 0;
         }
-        if (!last_file.Truncate(pos.nPos)) {
-            LogError("Failed to truncate filter file %d", pos.nFile);
-            return 0;
-        }
-        if (!last_file.Commit()) {
-            LogError("Failed to commit filter file %d", pos.nFile);
-            (void)last_file.fclose();
-            return 0;
-        }
-        if (last_file.fclose() != 0) {
-            LogError("Failed to close filter file %d after commit: %s", pos.nFile, SysErrorString(errno));
+        if (!CloseWriteHandle(pos.nPos)) {
             return 0;
         }
 
@@ -224,18 +255,11 @@ size_t BlockFilterIndex::WriteFilterToDisk(FlatFilePos& pos, const BlockFilter& 
         return 0;
     }
 
-    AutoFile fileout{m_filter_fileseq->Open(pos)};
-    if (fileout.IsNull()) {
-        LogError("Failed to open filter file %d", pos.nFile);
+    if (!EnsureWriteHandleOpen(pos)) {
         return 0;
     }
 
-    fileout << filter.GetBlockHash() << filter.GetEncodedFilter();
-
-    if (fileout.fclose() != 0) {
-        LogError("Failed to close filter file %d: %s", pos.nFile, SysErrorString(errno));
-        return 0;
-    }
+    *m_write_file << filter.GetBlockHash() << filter.GetEncodedFilter();
 
     return data_size;
 }

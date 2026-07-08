@@ -9,6 +9,7 @@
 #include <flatfile.h>
 #include <index/base.h>
 #include <interfaces/chain.h>
+#include <streams.h>
 #include <sync.h>
 #include <uint256.h>
 #include <util/hasher.h>
@@ -46,8 +47,19 @@ private:
     FlatFilePos m_next_filter_pos;
     std::unique_ptr<FlatFileSeq> m_filter_fileseq;
 
+    // Handle kept open across writes to avoid an open/close syscall pair per block; only closed
+    // (and reopened on demand) on file rollover, on Commit, or when the index is destroyed.
+    std::optional<AutoFile> m_write_file;
+    int m_write_file_no{-1};
+
     bool ReadFilterFromDisk(const FlatFilePos& pos, const uint256& hash, BlockFilter& filter) const;
     size_t WriteFilterToDisk(FlatFilePos& pos, const BlockFilter& filter);
+
+    //! Ensures m_write_file is open and positioned for pos.nFile, (re)opening it if necessary.
+    bool EnsureWriteHandleOpen(const FlatFilePos& pos);
+    //! Finalizes and closes m_write_file, if open. If truncate_to is set, truncates the file to
+    //! that size first (used when rolling over to a new file).
+    bool CloseWriteHandle(std::optional<unsigned> truncate_to = std::nullopt);
 
     Mutex m_cs_headers_cache;
     /** cache of block hash to filter header, to avoid disk access when responding to getcfcheckpt. */
@@ -77,6 +89,7 @@ public:
     /** Constructs the index, which becomes available to be queried. */
     explicit BlockFilterIndex(std::unique_ptr<interfaces::Chain> chain, BlockFilterType filter_type,
                               size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
+    ~BlockFilterIndex() override;
 
     interfaces::Chain::NotifyOptions CustomOptions() override;
 
