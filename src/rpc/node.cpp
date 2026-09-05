@@ -27,7 +27,9 @@
 #include <util/any.h>
 #include <util/check.h>
 #include <util/time.h>
+#include <validation.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #ifdef HAVE_MALLOC_INFO
@@ -344,7 +346,20 @@ static RPCMethod echoipc()
     };
 }
 
-static UniValue SummaryToJSON(const IndexSummary&& summary, std::string index_name)
+//! Fraction of the chain being indexed that the index covers, measured in
+//! cumulative transactions like GetBackgroundVerificationProgress does. Compared
+//! against ValidatedChainstate(), the chain indexes follow, so that this reaches
+//! 1.0 exactly when the index is synced, and stays consistent with the "synced"
+//! field while a background chainstate is in use.
+static double IndexProgress(ChainstateManager& chainman, const CBlockIndex* tip, const IndexSummary& summary) EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+{
+    AssertLockHeld(::cs_main);
+    const CBlockIndex* best{chainman.m_blockman.LookupBlockIndex(summary.best_block_hash)};
+    if (!best || !tip || best->m_chain_tx_count == 0 || tip->m_chain_tx_count == 0) return 0.0;
+    return std::min<double>(double(best->m_chain_tx_count) / double(tip->m_chain_tx_count), 1.0);
+}
+
+static UniValue SummaryToJSON(const IndexSummary&& summary, std::string index_name, double progress)
 {
     UniValue ret_summary(UniValue::VOBJ);
     if (!index_name.empty() && index_name != summary.name) return ret_summary;
@@ -352,6 +367,7 @@ static UniValue SummaryToJSON(const IndexSummary&& summary, std::string index_na
     UniValue entry(UniValue::VOBJ);
     entry.pushKV("synced", summary.synced);
     entry.pushKV("best_block_height", summary.best_block_height);
+    entry.pushKV("progress", progress);
     ret_summary.pushKV(summary.name, std::move(entry));
     return ret_summary;
 }
@@ -371,6 +387,7 @@ static RPCMethod getindexinfo()
                             {
                                 {RPCResult::Type::BOOL, "synced", "Whether the index is synced or not"},
                                 {RPCResult::Type::NUM, "best_block_height", "The block height to which the index is synced"},
+                                {RPCResult::Type::NUM, "progress", "Fraction of the chain being indexed that the index covers [0..1]"},
                             }
                         },
                     },
@@ -394,8 +411,15 @@ static RPCMethod getindexinfo()
         summaries.push_back(index.GetSummary());
     });
 
+    // Compare every index against the same tip, so a single response can't mix
+    // progress values taken at different heights.
+    ChainstateManager& chainman = EnsureAnyChainman(request.context);
+    LOCK(chainman.GetMutex());
+    const CBlockIndex* tip{chainman.ValidatedChainstate().m_chain.Tip()};
+
     for (auto& summary : summaries) {
-        result.pushKVs(SummaryToJSON(std::move(summary), index_name));
+        const double progress{IndexProgress(chainman, tip, summary)};
+        result.pushKVs(SummaryToJSON(std::move(summary), index_name, progress));
     }
 
     return result;
