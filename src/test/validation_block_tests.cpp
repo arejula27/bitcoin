@@ -388,4 +388,66 @@ BOOST_AUTO_TEST_CASE(test_empty_process_new_block_headers)
     const auto res{m_node.chainman->ProcessNewBlockHeaders({}, true)};
     BOOST_CHECK(res.IsValid());
 }
+
+// Header rejection must set IsInvalid(), never IsError().
+BOOST_AUTO_TEST_CASE(header_rejection_reasons)
+{
+    bool ignored;
+    BOOST_CHECK(Assert(m_node.chainman)->ProcessNewBlock(std::make_shared<CBlock>(Params().GenesisBlock()), true, true, &ignored));
+    const uint256 genesis_hash{Params().GenesisBlock().GetHash()};
+
+    // high-hash: proof of work not satisfied. Force an invalid (zero) target instead of
+    // just leaving nNonce unsolved: regtest's real target is so permissive that an
+    // unsolved header can satisfy it by chance.
+    {
+        auto pblock = Block(genesis_hash);
+        pblock->nBits = 0;
+        const auto state{m_node.chainman->ProcessNewBlockHeaders({{*pblock}}, /*min_pow_checked=*/true)};
+        BOOST_CHECK(state.IsInvalid());
+        BOOST_CHECK(!state.IsError());
+    }
+
+    // too-little-chainwork: an otherwise-valid header submitted with min_pow_checked=false.
+    {
+        auto pblock = Block(genesis_hash);
+        while (!CheckProofOfWork(pblock->GetHash(), pblock->nBits, Params().GetConsensus())) {
+            ++(pblock->nNonce);
+        }
+        const auto state{m_node.chainman->ProcessNewBlockHeaders({{*pblock}}, /*min_pow_checked=*/false)};
+        BOOST_CHECK(state.IsInvalid());
+        BOOST_CHECK(!state.IsError());
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "too-little-chainwork");
+    }
+
+    // duplicate-invalid: resubmitting the header of a block that failed full validation.
+    const auto bad_block = BadBlock(genesis_hash);
+    {
+        Assert(m_node.chainman)->ProcessNewBlock(bad_block, /*force_processing=*/true, /*min_pow_checked=*/true, &ignored);
+        const auto state{m_node.chainman->ProcessNewBlockHeaders({{*bad_block}}, /*min_pow_checked=*/true)};
+        BOOST_CHECK(state.IsInvalid());
+        BOOST_CHECK(!state.IsError());
+    }
+
+    // bad-prevblk: a header building on a prev that is known invalid.
+    {
+        auto pblock = Block(bad_block->GetHash());
+        while (!CheckProofOfWork(pblock->GetHash(), pblock->nBits, Params().GetConsensus())) {
+            ++(pblock->nNonce);
+        }
+        const auto state{m_node.chainman->ProcessNewBlockHeaders({{*pblock}}, /*min_pow_checked=*/true)};
+        BOOST_CHECK(state.IsInvalid());
+        BOOST_CHECK(!state.IsError());
+    }
+}
+
+// BlockValidationState::Error() must set IsError(), never IsInvalid() or IsValid().
+BOOST_AUTO_TEST_CASE(block_validation_state_error)
+{
+    BlockValidationState state;
+    (void)state.Error("test-error");
+    BOOST_CHECK(state.IsError());
+    BOOST_CHECK(!state.IsInvalid());
+    BOOST_CHECK(!state.IsValid());
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "test-error");
+}
 BOOST_AUTO_TEST_SUITE_END()
