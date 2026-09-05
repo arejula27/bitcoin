@@ -34,6 +34,7 @@
 #include <malloc.h>
 #endif
 #include <string_view>
+#include <vector>
 
 using node::NodeContext;
 
@@ -385,21 +386,17 @@ static RPCMethod getindexinfo()
     UniValue result(UniValue::VOBJ);
     const std::string index_name{self.MaybeArg<std::string_view>("index_name").value_or("")};
 
-    if (g_txindex) {
-        result.pushKVs(SummaryToJSON(g_txindex->GetSummary(), index_name));
-    }
-
-    if (g_coin_stats_index) {
-        result.pushKVs(SummaryToJSON(g_coin_stats_index->GetSummary(), index_name));
-    }
-
-    if (g_txospenderindex) {
-        result.pushKVs(SummaryToJSON(g_txospenderindex->GetSummary(), index_name));
-    }
-
-    ForEachBlockFilterIndex([&result, &index_name](const BlockFilterIndex& index) {
-        result.pushKVs(SummaryToJSON(index.GetSummary(), index_name));
+    std::vector<IndexSummary> summaries;
+    if (g_txindex) summaries.push_back(g_txindex->GetSummary());
+    if (g_coin_stats_index) summaries.push_back(g_coin_stats_index->GetSummary());
+    if (g_txospenderindex) summaries.push_back(g_txospenderindex->GetSummary());
+    ForEachBlockFilterIndex([&summaries](const BlockFilterIndex& index) {
+        summaries.push_back(index.GetSummary());
     });
+
+    for (auto& summary : summaries) {
+        result.pushKVs(SummaryToJSON(std::move(summary), index_name));
+    }
 
     return result;
 },
