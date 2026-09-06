@@ -20,8 +20,7 @@
 
 // Returns a fresh, not-yet-initialized TxoSpenderIndex. See BenchIndexSync()
 // for what f_memory changes. f_wipe empties the database, so the constructor
-// regenerates the siphash key on every iteration and writes it with fSync: a
-// fixed Disk-only cost, free under MemEnv.
+// regenerates and writes the siphash key on every iteration.
 static std::unique_ptr<TxoSpenderIndex> MakeTxoSpenderIndex(TestChain100Setup& test_setup, bool f_memory)
 {
     return std::make_unique<TxoSpenderIndex>(interfaces::MakeChain(test_setup.m_node),

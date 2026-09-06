@@ -62,22 +62,17 @@ static void BlockFilterIndexSync(benchmark::Bench& bench)
 }
 
 // Returns a fresh, not-yet-initialized BASIC BlockFilterIndex. f_memory only
-// covers the index database here: the filters always go through
-// m_filter_fileseq into the data directory, and CustomCommit() fsyncs that file
-// once per iteration, so both variants pay it and Mem drops less I/O than it
-// does for the other indexes.
+// covers the index database: the filters always go through m_filter_fileseq
+// into the data directory, so both variants pay that I/O.
 static std::unique_ptr<BlockFilterIndex> MakeBlockFilterIndex(TestChain100Setup& test_setup, bool f_memory)
 {
     return std::make_unique<BlockFilterIndex>(interfaces::MakeChain(test_setup.m_node), BlockFilterType::BASIC,
                                               /*n_cache_size=*/1_MiB, f_memory, /*f_wipe=*/true);
 }
 
-// Same sync as BlockFilterIndexSync above, but over blocks that carry
-// transactions paying to distinct scripts, so the filters hold elements
-// proportional to the number of transactions rather than a handful per block.
-// BlockFilterIndexSync scales with the number of blocks over near-empty
-// filters; this one scales with what a block contains. It also runs with a
-// larger n_cache_size, so the two numbers are not directly comparable.
+// Same sync as BlockFilterIndexSync above, but over blocks carrying
+// transactions paying to distinct scripts, so the filters scale with what a
+// block contains rather than with the number of blocks.
 static void BlockFilterIndexSyncRealistic(benchmark::Bench& bench, bool f_memory)
 {
     const auto test_setup = MakeNoLogFileContext<TestChain100Setup>();
