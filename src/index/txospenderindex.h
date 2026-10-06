@@ -17,6 +17,9 @@
 #include <string>
 
 struct CDiskTxPos;
+namespace txospenderindex_tests {
+class TxoSpenderIndexTest;
+}
 struct FlatFilePos;
 namespace interfaces {
 class Chain;
@@ -37,6 +40,7 @@ struct TxoSpender {
 class TxoSpenderIndex final : public BaseIndex
 {
 private:
+    friend class txospenderindex_tests::TxoSpenderIndexTest;
     /// Whether the database contains any legacy (disk position) entries.
     const bool m_has_legacy;
     std::unique_ptr<BaseIndex::DB> m_db;
