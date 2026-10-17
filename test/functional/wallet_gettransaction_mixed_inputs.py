@@ -97,6 +97,7 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
         # A label filter keeps the mixed entry if any wallet-owned output has that label.
         labeled_history = [entry for entry in wallet.listtransactions(label, 100) if entry["txid"] == txid]
         self.assert_mixed_history_entries(labeled_history, txid, wallet_inputs, wallet_outputs)
+        assert_equal([entry for entry in wallet.listtransactions("no_such_label", 100) if entry["txid"] == txid], [])
 
         since = [entry for entry in wallet.listsinceblock(before_blockhash)["transactions"] if entry["txid"] == txid]
         self.assert_mixed_history_entries(since, txid, wallet_inputs, wallet_outputs)
@@ -589,8 +590,10 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
         history = [entry for entry in alice.listtransactions("*", 100) if entry["txid"] == txid]
         self.assert_mixed_history_entries(history, txid, wallet_inputs, wallet_outputs)
 
-        since = [entry for entry in alice.listsinceblock(before_blockhash)["transactions"] if entry["txid"] == txid]
-        self.assert_mixed_history_entries(since, txid, wallet_inputs, wallet_outputs)
+        # include_change does not affect the mixed entry.
+        for include_change in (False, True):
+            since = [entry for entry in alice.listsinceblock(before_blockhash, include_change=include_change)["transactions"] if entry["txid"] == txid]
+            self.assert_mixed_history_entries(since, txid, wallet_inputs, wallet_outputs)
 
         # The same shape holds after confirmation.
         self.generatetoaddress(node, 1, funder.getnewaddress())
