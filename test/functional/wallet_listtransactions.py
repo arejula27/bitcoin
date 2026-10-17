@@ -188,46 +188,25 @@ class ListTransactionsTest(BitcoinTestFramework):
         assert_equal(tx_info["involves_mixed_inputs"], True)
         assert_equal(tx_info["wallet_debit"], input_0["amount"])
         assert_equal(tx_info["wallet_credit"], expected_credit)
-        send_details = [detail for detail in tx_info["details"] if detail["category"] == "send"]
-        assert_equal(len(send_details), 1)
-        assert_equal(sum(detail["amount"] for detail in tx_info["details"]), expected_amount)
-        assert_array_result(tx_info["details"], {"category": "send"}, {
-            "amount": -input_0["amount"],
-            "wallet_debit": input_0["amount"],
-            "wallet_credit": expected_credit,
-            "involves_mixed_inputs": True,
-        })
-        assert "address" not in send_details[0]
-        assert "vout" not in send_details[0]
-        assert "fee" not in send_details[0]
-        assert_array_result(tx_info["details"], {"category": "receive"}, {
-            "address": output_0,
-            "amount": expected_credit,
-            "involves_mixed_inputs": True,
-        })
-
-        # The unfiltered history reports a single unattributed aggregate send
-        # plus a receive entry for the wallet-owned output.
+        # The wallet's share of the foreign output and the fee is unknown, so
+        # both gettransaction details and the history report a single mixed
+        # entry with the net change.
         history = [entry for entry in self.nodes[0].listtransactions("*", 100) if entry["txid"] == txid_join]
-        assert_equal(len(history), 2)
-        history_send = [entry for entry in history if entry["category"] == "send"]
-        assert_equal(len(history_send), 1)
-        assert_equal(sum(entry["amount"] for entry in history), expected_amount)
-        assert_array_result(history, {"category": "send"}, {
-            "amount": -input_0["amount"],
-            "wallet_debit": input_0["amount"],
-            "wallet_credit": expected_credit,
-            "involves_mixed_inputs": True,
-        })
-        assert_array_result(history, {"category": "receive"}, {
-            "address": output_0,
-            "amount": expected_credit,
-            "involves_mixed_inputs": True,
-        })
-        for entry in history:
+        for entries in (tx_info["details"], history):
+            assert_equal(len(entries), 1)
+            entry = entries[0]
+            assert_equal(entry["category"], "mixed")
+            assert_equal(entry["amount"], expected_amount)
+            assert_equal(entry["involves_mixed_inputs"], True)
+            assert_equal(entry["wallet_debit"], input_0["amount"])
+            assert_equal(entry["wallet_credit"], expected_credit)
+            assert_equal(entry["wallet_inputs"], [{"txid": input_0["txid"], "vout": input_0["vout"], "amount": input_0["amount"]}])
+            assert_equal(len(entry["wallet_outputs"]), 1)
+            assert_equal(entry["wallet_outputs"][0]["address"], output_0)
+            assert_equal(entry["wallet_outputs"][0]["amount"], expected_credit)
+            assert "address" not in entry
+            assert "vout" not in entry
             assert "fee" not in entry
-        assert "address" not in history_send[0]
-        assert "vout" not in history_send[0]
 
     def run_invalid_parameters_test(self):
         self.log.info("Test listtransactions RPC parameter validity")
@@ -290,18 +269,17 @@ class ListTransactionsTest(BitcoinTestFramework):
             assert_equal(tx_info["involves_mixed_inputs"], True)
             assert_equal(tx_info["wallet_debit"], Decimal("1"))
             assert_equal(tx_info["wallet_credit"], Decimal("1.5"))
-            send_details = [detail for detail in tx_info["details"] if detail["category"] == "send"]
-            assert_equal(len(send_details), 1)
-            assert_equal(sum(detail["amount"] for detail in tx_info["details"]), Decimal("0.5"))
-            assert_array_result(tx_info["details"], {"category": "send"}, {
-                "amount": Decimal("-1"),
-                "wallet_debit": Decimal("1"),
-                "wallet_credit": Decimal("1.5"),
-                "involves_mixed_inputs": True,
-            })
-            assert "address" not in send_details[0]
-            assert "vout" not in send_details[0]
-            assert "fee" not in send_details[0]
+            assert_equal(len(tx_info["details"]), 1)
+            detail = tx_info["details"][0]
+            assert_equal(detail["category"], "mixed")
+            assert_equal(detail["amount"], Decimal("0.5"))
+            assert_equal(detail["wallet_debit"], Decimal("1"))
+            assert_equal(detail["wallet_credit"], Decimal("1.5"))
+            assert_equal(detail["involves_mixed_inputs"], True)
+            assert_equal(detail["wallet_inputs"], [{"txid": utxos[0]["txid"], "vout": utxos[0]["vout"], "amount": Decimal("1")}])
+            assert "address" not in detail
+            assert "vout" not in detail
+            assert "fee" not in detail
 
     def check_tx_variants(self, wallet, txid, canonical_tx_hex, canonical_wtxid, alternate_wtxids):
         """Assert gettransaction and listtransactions report tx variants properly"""

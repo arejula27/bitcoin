@@ -40,18 +40,15 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
         if not expect_fee:
             assert "fee" not in entry
 
-    def assert_unattributed_aggregate_send(self, entry, txid, expected_amount, wallet_debit, wallet_credit, include_txid):
-        if include_txid:
-            assert_equal(entry["txid"], txid)
-        # The conservative fallback is a single aggregate "send" entry: the wallet
-        # provably spent all of its own inputs but cannot attribute the foreign
-        # outputs or its fee share, so it has no address, vout, or fee.
-        assert_equal(entry["category"], "send")
-        assert_equal(entry["amount"], expected_amount)
-        assert "address" not in entry
-        assert "vout" not in entry
-        assert "fee" not in entry
-        self.assert_mixed_fields(entry, wallet_debit, wallet_credit)
+    def wallet_input(self, utxo):
+        return {"txid": utxo["txid"], "vout": utxo["vout"], "amount": utxo["amount"]}
+
+    def wallet_output(self, vout, address, amount, label=None, change=False):
+        output = {"vout": vout, "address": address}
+        if label is not None:
+            output["label"] = label
+        output.update({"amount": amount, "change": change})
+        return output
 
     def assert_receive_entry(self, entry, txid, address, vout, amount, wallet_debit, wallet_credit, include_txid):
         if include_txid:
@@ -62,39 +59,47 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
         assert_equal(entry["amount"], amount)
         self.assert_mixed_fields(entry, wallet_debit, wallet_credit)
 
-    def assert_mixed_history_entries(self, entries, txid, expected_net, address, vout, wallet_debit, wallet_credit, include_txid=True):
-        """Check that a conservative mixed-input transaction is reported as a single
-        unattributed aggregate send carrying the negative wallet debit plus a receive
-        entry for the wallet-owned output (and nothing else), with entry amounts
-        summing to the wallet net change."""
-        assert_equal(len(entries), 2)
-        assert_equal(sum(entry["amount"] for entry in entries), expected_net)
+    def assert_mixed_net_entry(self, entry, txid, wallet_inputs, wallet_outputs, include_txid):
+        if include_txid:
+            assert_equal(entry["txid"], txid)
+        # The wallet cannot attribute the foreign outputs or its fee share, so
+        # the transaction is a single entry with the wallet's net change and
+        # the wallet-owned inputs and outputs it spent and created.
+        wallet_debit = sum(i["amount"] for i in wallet_inputs)
+        wallet_credit = sum(o["amount"] for o in wallet_outputs)
+        assert_equal(entry["category"], "mixed")
+        assert_equal(entry["amount"], wallet_credit - wallet_debit)
+        assert "address" not in entry
+        assert "vout" not in entry
+        assert "fee" not in entry
+        self.assert_mixed_fields(entry, wallet_debit, wallet_credit)
+        assert_equal(entry["wallet_inputs"], wallet_inputs)
+        assert_equal(sorted(entry["wallet_outputs"], key=lambda o: o["vout"]), sorted(wallet_outputs, key=lambda o: o["vout"]))
 
-        send_entries = [entry for entry in entries if entry["category"] == "send"]
-        assert_equal(len(send_entries), 1)
-        self.assert_unattributed_aggregate_send(send_entries[0], txid, -wallet_debit, wallet_debit, wallet_credit, include_txid=include_txid)
+    def assert_mixed_history_entries(self, entries, txid, wallet_inputs, wallet_outputs, include_txid=True):
+        """Check that a conservative mixed-input transaction is reported as exactly one mixed entry."""
+        assert_equal(len(entries), 1)
+        self.assert_mixed_net_entry(entries[0], txid, wallet_inputs, wallet_outputs, include_txid=include_txid)
 
-        receive_entries = [entry for entry in entries if entry["category"] == "receive"]
-        assert_equal(len(receive_entries), 1)
-        self.assert_receive_entry(receive_entries[0], txid, address, vout, wallet_credit, wallet_debit, wallet_credit, include_txid=include_txid)
-
-    def assert_wallet_view(self, wallet_name, wallet, txid, label, address, vout, wallet_debit, wallet_credit, before_blockhash):
+    def assert_wallet_view(self, wallet_name, wallet, txid, label, wallet_inputs, wallet_outputs, before_blockhash):
+        wallet_debit = sum(i["amount"] for i in wallet_inputs)
+        wallet_credit = sum(o["amount"] for o in wallet_outputs)
         expected_amount = wallet_credit - wallet_debit
 
         tx_info = wallet.gettransaction(txid)
         assert_equal(tx_info["amount"], expected_amount)
         self.assert_mixed_fields(tx_info, wallet_debit, wallet_credit)
-        self.assert_mixed_history_entries(tx_info["details"], txid, expected_amount, address, vout, wallet_debit, wallet_credit, include_txid=False)
+        self.assert_mixed_history_entries(tx_info["details"], txid, wallet_inputs, wallet_outputs, include_txid=False)
 
         history = [entry for entry in wallet.listtransactions("*", 100) if entry["txid"] == txid]
-        self.assert_mixed_history_entries(history, txid, expected_amount, address, vout, wallet_debit, wallet_credit)
+        self.assert_mixed_history_entries(history, txid, wallet_inputs, wallet_outputs)
 
+        # A label filter keeps the mixed entry if any wallet-owned output has that label.
         labeled_history = [entry for entry in wallet.listtransactions(label, 100) if entry["txid"] == txid]
-        assert_equal(len(labeled_history), 1)
-        self.assert_receive_entry(labeled_history[0], txid, address, vout, wallet_credit, wallet_debit, wallet_credit, include_txid=True)
+        self.assert_mixed_history_entries(labeled_history, txid, wallet_inputs, wallet_outputs)
 
         since = [entry for entry in wallet.listsinceblock(before_blockhash)["transactions"] if entry["txid"] == txid]
-        self.assert_mixed_history_entries(since, txid, expected_amount, address, vout, wallet_debit, wallet_credit)
+        self.assert_mixed_history_entries(since, txid, wallet_inputs, wallet_outputs)
 
         self.log.debug("%s mixed-input wallet net amount: %s", wallet_name, expected_amount)
 
@@ -214,10 +219,8 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
             wallet=late_wallet,
             txid=child_txid,
             label="late_receive",
-            address=wallet_receive_address,
-            vout=child_vout,
-            wallet_debit=wallet_debit,
-            wallet_credit=wallet_credit,
+            wallet_inputs=[self.wallet_input(wallet_input)],
+            wallet_outputs=[self.wallet_output(child_vout, wallet_receive_address, wallet_credit, "late_receive")],
             before_blockhash=funding_blockhash,
         )
 
@@ -330,19 +333,15 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
                 "wallet_name": "alice",
                 "wallet": alice,
                 "label": alice_label,
-                "address": alice_output,
-                "vout": find_vout_for_address(node, txid, alice_output),
-                "wallet_debit": alice_input["amount"],
-                "wallet_credit": alice_credit,
+                "wallet_inputs": [self.wallet_input(alice_input)],
+                "wallet_outputs": [self.wallet_output(find_vout_for_address(node, txid, alice_output), alice_output, alice_credit, alice_label)],
             },
             {
                 "wallet_name": "bob",
                 "wallet": bob,
                 "label": bob_label,
-                "address": bob_output,
-                "vout": find_vout_for_address(node, txid, bob_output),
-                "wallet_debit": bob_input["amount"],
-                "wallet_credit": bob_credit,
+                "wallet_inputs": [self.wallet_input(bob_input)],
+                "wallet_outputs": [self.wallet_output(find_vout_for_address(node, txid, bob_output), bob_output, bob_credit, bob_label)],
             },
         ]
 
@@ -364,17 +363,11 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
 
         txid = mixed_tx["txid"]
         for view in mixed_tx["wallet_views"]:
-            wallet = view["wallet"]
-            address = view["address"]
-            vout = view["vout"]
-            wallet_debit = view["wallet_debit"]
-            wallet_credit = view["wallet_credit"]
-            expected_net = wallet_credit - wallet_debit
-            since = wallet.listsinceblock(reorged_blockhash)
+            since = view["wallet"].listsinceblock(reorged_blockhash)
             removed = [entry for entry in since["removed"] if entry["txid"] == txid]
-            self.assert_mixed_history_entries(removed, txid, expected_net, address, vout, wallet_debit, wallet_credit)
+            self.assert_mixed_history_entries(removed, txid, view["wallet_inputs"], view["wallet_outputs"])
             reincluded = [entry for entry in since["transactions"] if entry["txid"] == txid]
-            self.assert_mixed_history_entries(reincluded, txid, expected_net, address, vout, wallet_debit, wallet_credit)
+            self.assert_mixed_history_entries(reincluded, txid, view["wallet_inputs"], view["wallet_outputs"])
 
     def run_test(self):
         node = self.nodes[0]
@@ -452,19 +445,18 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
         txid = node.sendrawtransaction(raw_tx)
         node.syncwithvalidationinterfacequeue()
 
-        # Alice spends nothing of value, so the aggregate send summary reports a
-        # zero wallet debit (a zero-amount send) while the received output is
-        # still attributed.
+        # Alice spends nothing of value, so the mixed entry lists a zero-value
+        # wallet input and its amount is the received output.
         alice_vout = find_vout_for_address(node, txid, alice_output)
+        wallet_inputs = [{"txid": parent_txid, "vout": 0, "amount": Decimal("0E-8")}]
+        wallet_outputs = [self.wallet_output(alice_vout, alice_output, alice_credit, label)]
         self.assert_wallet_view(
             wallet_name="alice",
             wallet=alice,
             txid=txid,
             label=label,
-            address=alice_output,
-            vout=alice_vout,
-            wallet_debit=Decimal("0"),
-            wallet_credit=alice_credit,
+            wallet_inputs=wallet_inputs,
+            wallet_outputs=wallet_outputs,
             before_blockhash=before_blockhash,
         )
 
@@ -474,10 +466,8 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
             wallet=alice,
             txid=txid,
             label=label,
-            address=alice_output,
-            vout=alice_vout,
-            wallet_debit=Decimal("0"),
-            wallet_credit=alice_credit,
+            wallet_inputs=wallet_inputs,
+            wallet_outputs=wallet_outputs,
             before_blockhash=before_blockhash,
         )
 
@@ -523,17 +513,16 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
 
         # Although alice's wallet can compute the total fee (it knows every
         # input value), the wallet's fee share is still unattributable, so
-        # the transaction must be reported with the conservative aggregate send view.
-        alice_vout = find_vout_for_address(node, txid, alice_output)
+        # the transaction must be reported as a single mixed entry.
+        wallet_inputs = [self.wallet_input(alice_input)]
+        wallet_outputs = [self.wallet_output(find_vout_for_address(node, txid, alice_output), alice_output, alice_credit, label)]
         self.assert_wallet_view(
             wallet_name="alice",
             wallet=alice,
             txid=txid,
             label=label,
-            address=alice_output,
-            vout=alice_vout,
-            wallet_debit=alice_input["amount"],
-            wallet_credit=alice_credit,
+            wallet_inputs=wallet_inputs,
+            wallet_outputs=wallet_outputs,
             before_blockhash=before_blockhash,
         )
 
@@ -543,15 +532,13 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
             wallet=alice,
             txid=txid,
             label=label,
-            address=alice_output,
-            vout=alice_vout,
-            wallet_debit=alice_input["amount"],
-            wallet_credit=alice_credit,
+            wallet_inputs=wallet_inputs,
+            wallet_outputs=wallet_outputs,
             before_blockhash=before_blockhash,
         )
 
     def test_wallet_change_output(self, node, funder, alice, bob):
-        self.log.info("Test a wallet-owned change output in a conservative mixed-input transaction is reported as a receive entry")
+        self.log.info("Test a wallet-owned change output in a conservative mixed-input transaction is marked as change")
         # Fund alice and bob with positive-value inputs. The foreign (bob) input
         # has positive value, so the transaction is always reported conservatively
         # (the absent fee on the entries below confirms the conservative view).
@@ -589,36 +576,33 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
         # Premise: the wallet-owned output is genuinely change, not a labeled receive.
         assert_equal(alice.getaddressinfo(alice_change_address)["ischange"], True)
 
-        alice_debit = alice_input["amount"]
-        alice_credit = alice_change_amount
-        expected_net = alice_credit - alice_debit
         change_vout = find_vout_for_address(node, txid, alice_change_address)
+        wallet_inputs = [self.wallet_input(alice_input)]
+        wallet_outputs = [self.wallet_output(change_vout, alice_change_address, alice_change_amount, change=True)]
 
-        # The conservative aggregate send view does not skip change: the change
-        # output is reported as a receive entry alongside the aggregate send, so
-        # the entry amounts still sum to alice's net change.
+        # The change output is listed inside the mixed entry and marked as change,
+        # so it is not reported as a separate receive.
         tx_info = alice.gettransaction(txid)
-        assert_equal(tx_info["amount"], expected_net)
-        self.assert_mixed_fields(tx_info, alice_debit, alice_credit)
-        self.assert_mixed_history_entries(tx_info["details"], txid, expected_net, alice_change_address, change_vout, alice_debit, alice_credit, include_txid=False)
+        assert_equal(tx_info["amount"], alice_change_amount - alice_input["amount"])
+        self.assert_mixed_history_entries(tx_info["details"], txid, wallet_inputs, wallet_outputs, include_txid=False)
 
         history = [entry for entry in alice.listtransactions("*", 100) if entry["txid"] == txid]
-        self.assert_mixed_history_entries(history, txid, expected_net, alice_change_address, change_vout, alice_debit, alice_credit)
+        self.assert_mixed_history_entries(history, txid, wallet_inputs, wallet_outputs)
 
         since = [entry for entry in alice.listsinceblock(before_blockhash)["transactions"] if entry["txid"] == txid]
-        self.assert_mixed_history_entries(since, txid, expected_net, alice_change_address, change_vout, alice_debit, alice_credit)
+        self.assert_mixed_history_entries(since, txid, wallet_inputs, wallet_outputs)
 
-        # The same conservative shape holds after confirmation.
+        # The same shape holds after confirmation.
         self.generatetoaddress(node, 1, funder.getnewaddress())
         confirmed = [entry for entry in alice.listtransactions("*", 100) if entry["txid"] == txid]
-        self.assert_mixed_history_entries(confirmed, txid, expected_net, alice_change_address, change_vout, alice_debit, alice_credit)
+        self.assert_mixed_history_entries(confirmed, txid, wallet_inputs, wallet_outputs)
 
     def test_all_outputs_wallet_owned(self, node, funder, alice, bob):
         """Check mixed-input history when every output belongs to the wallet.
 
         Vary the fee to cover positive, zero, and negative net changes. Verify
-        that the aggregate send and two labeled receives sum to the net change,
-        preserving output metadata before and after confirmation.
+        that a single mixed entry reports the net change and lists both labeled
+        outputs, before and after confirmation.
         """
         wallet_debit = Decimal("1.00000000")
         foreign_amount = Decimal("0.00002000")
@@ -670,31 +654,19 @@ class WalletGetTransactionMixedInputsTest(BitcoinTestFramework):
                     ([entry for entry in alice.listtransactions("*", 100) if entry["txid"] == txid], True),
                     ([entry for entry in alice.listsinceblock(before_blockhash)["transactions"] if entry["txid"] == txid], True),
                 ]
+                wallet_inputs = [self.wallet_input(alice_input)]
+                wallet_outputs = [self.wallet_output(vouts[address], address, amount, label) for address, (amount, label) in outputs.items()]
                 for entries, include_txid in histories:
-                    assert_equal(len(entries), 3)
-                    assert_equal(sum(entry["amount"] for entry in entries), expected_net)
-                    send_entries = [entry for entry in entries if entry["category"] == "send"]
-                    assert_equal(len(send_entries), 1)
-                    self.assert_unattributed_aggregate_send(send_entries[0], txid, -wallet_debit, wallet_debit, wallet_credit, include_txid=include_txid)
-                    receive_entries = {entry["address"]: entry for entry in entries if entry["category"] == "receive"}
-                    assert_equal(set(receive_entries), set(outputs))
-                    for address, (amount, label) in outputs.items():
-                        entry = receive_entries[address]
-                        self.assert_receive_entry(entry, txid, address, vouts[address], amount, wallet_debit, wallet_credit, include_txid=include_txid)
-                        assert_equal(entry["label"], label)
+                    self.assert_mixed_history_entries(entries, txid, wallet_inputs, wallet_outputs, include_txid=include_txid)
 
-                # Label filters retain the matching output credit, not the net
-                # transaction amount or the aggregate debit.
-                for address, (amount, label) in outputs.items():
+                # Each output label matches the whole mixed entry.
+                for _, label in outputs.values():
                     for history in [
                         alice.listtransactions(label, 100),
                         alice.listsinceblock(before_blockhash, label=label)["transactions"],
                     ]:
                         entries = [entry for entry in history if entry["txid"] == txid]
-                        assert_equal(len(entries), 1)
-                        self.assert_receive_entry(entries[0], txid, address, vouts[address], amount, wallet_debit, wallet_credit, include_txid=True)
-                        assert_equal(entries[0]["label"], label)
-
+                        self.assert_mixed_history_entries(entries, txid, wallet_inputs, wallet_outputs)
 
 if __name__ == '__main__':
     WalletGetTransactionMixedInputsTest(__file__).main()
