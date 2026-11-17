@@ -450,7 +450,13 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
     CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
 
     const auto score_with_topo{GetSortedScoreWithTopology()};
-    assert(GetSortedScoreWithTopologyByChunks() == score_with_topo);
+
+    // The order obtained from the chunk index must match sorting by pairwise comparison.
+    auto sorted{score_with_topo};
+    std::sort(sorted.begin(), sorted.end(), [this](const auto& a, const auto& b) EXCLUSIVE_LOCKS_REQUIRED(cs) noexcept {
+        return m_txgraph->CompareMainOrder(*a, *b) < 0;
+    });
+    assert(sorted == score_with_topo);
 
     // Number of chunks is bounded by number of transactions.
     const auto diagram{GetFeerateDiagram()};
@@ -610,22 +616,6 @@ std::vector<CTxMemPool::txiter> CTxMemPool::ExtractBestByMiningScoreWithTopology
 }
 
 std::vector<CTxMemPool::indexed_transaction_set::const_iterator> CTxMemPool::GetSortedScoreWithTopology() const
-{
-    std::vector<indexed_transaction_set::const_iterator> iters;
-    AssertLockHeld(cs);
-
-    iters.reserve(mapTx.size());
-
-    for (indexed_transaction_set::iterator mi = mapTx.begin(); mi != mapTx.end(); ++mi) {
-        iters.push_back(mi);
-    }
-    std::sort(iters.begin(), iters.end(), [this](const auto& a, const auto& b) EXCLUSIVE_LOCKS_REQUIRED(cs) noexcept {
-        return m_txgraph->CompareMainOrder(*a, *b) < 0;
-    });
-    return iters;
-}
-
-std::vector<CTxMemPool::indexed_transaction_set::const_iterator> CTxMemPool::GetSortedScoreWithTopologyByChunks() const
 {
     std::vector<indexed_transaction_set::const_iterator> iters;
     AssertLockHeld(cs);

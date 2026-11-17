@@ -278,8 +278,6 @@ public:
 
 private:
     std::vector<indexed_transaction_set::const_iterator> GetSortedScoreWithTopology() const EXCLUSIVE_LOCKS_REQUIRED(cs);
-    /** Same order as GetSortedScoreWithTopology(), obtained by walking the TxGraph chunk index. */
-    std::vector<indexed_transaction_set::const_iterator> GetSortedScoreWithTopologyByChunks() const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     /**
      * Track locally submitted transactions to periodically retry initial broadcast.
