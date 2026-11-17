@@ -450,6 +450,7 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
     CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
 
     const auto score_with_topo{GetSortedScoreWithTopology()};
+    assert(GetSortedScoreWithTopologyByChunks() == score_with_topo);
 
     // Number of chunks is bounded by number of transactions.
     const auto diagram{GetFeerateDiagram()};
@@ -621,6 +622,25 @@ std::vector<CTxMemPool::indexed_transaction_set::const_iterator> CTxMemPool::Get
     std::sort(iters.begin(), iters.end(), [this](const auto& a, const auto& b) EXCLUSIVE_LOCKS_REQUIRED(cs) noexcept {
         return m_txgraph->CompareMainOrder(*a, *b) < 0;
     });
+    return iters;
+}
+
+std::vector<CTxMemPool::indexed_transaction_set::const_iterator> CTxMemPool::GetSortedScoreWithTopologyByChunks() const
+{
+    std::vector<indexed_transaction_set::const_iterator> iters;
+    AssertLockHeld(cs);
+
+    iters.reserve(mapTx.size());
+
+    // The chunk index is already kept in main order, so walking it gives the sorted order
+    // without comparing transactions pairwise.
+    auto builder{m_txgraph->GetBlockBuilder()};
+    while (auto chunk{builder->GetCurrentChunk()}) {
+        for (TxGraph::Ref* ref : chunk->first) {
+            iters.push_back(mapTx.iterator_to(static_cast<const CTxMemPoolEntry&>(*ref)));
+        }
+        builder->Include();
+    }
     return iters;
 }
 
