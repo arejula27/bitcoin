@@ -7,11 +7,13 @@
 #include <test/util/time.h>
 #include <test/util/txmempool.h>
 #include <txmempool.h>
+#include <util/feefrac.h>
 #include <util/time.h>
 
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+#include <map>
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(mempool_tests, TestingSetup)
@@ -541,6 +543,75 @@ BOOST_AUTO_TEST_CASE(MempoolUnbroadcastMemoryUsage)
 
     pool.RemoveUnbroadcastTx(txid);
     BOOST_CHECK_EQUAL(pool.DynamicMemoryUsage(), usage_before);
+}
+
+// entryAll() lists the mempool in mining order: every transaction exactly once, parents before
+// children, and chunk feerates that never increase. Check this on random DAGs with equal and
+// distinct feerates, after additions, prioritisation and removals.
+BOOST_AUTO_TEST_CASE(MempoolEntryAllOrder)
+{
+    CTxMemPool& pool{*Assert(m_node.mempool)};
+    LOCK2(cs_main, pool.cs);
+
+    const auto check_order{[&]() EXCLUSIVE_LOCKS_REQUIRED(pool.cs) {
+        const auto all{pool.entryAll()};
+        BOOST_CHECK_EQUAL(all.size(), pool.size());
+        std::map<Txid, size_t> pos;
+        for (size_t i{0}; i < all.size(); ++i) {
+            BOOST_CHECK(pos.emplace(all[i].get().GetTx().GetHash(), i).second);
+        }
+        for (size_t i{0}; i < all.size(); ++i) {
+            for (const CTxIn& txin : all[i].get().GetTx().vin) {
+                const auto parent{pos.find(txin.prevout.hash)};
+                if (parent != pos.end()) BOOST_CHECK_LT(parent->second, i);
+            }
+            if (i > 0) {
+                BOOST_CHECK(ByRatio{pool.GetMainChunkFeerate(all[i])} <= ByRatio{pool.GetMainChunkFeerate(all[i - 1])});
+            }
+        }
+    }};
+
+    std::vector<COutPoint> spendable;
+    std::vector<CTransactionRef> added;
+    uint32_t next_root{0};
+    constexpr int NUM_TXS{400};
+    for (int i{0}; i < NUM_TXS; ++i) {
+        CMutableTransaction mtx;
+        // Spend up to 3 outputs of earlier transactions, or a fresh outpoint if none is picked.
+        const int num_in{1 + static_cast<int>(m_rng.randrange(3))};
+        for (int j{0}; j < num_in && !spendable.empty() && m_rng.randrange(4) != 0; ++j) {
+            const size_t k{m_rng.randrange(spendable.size())};
+            mtx.vin.emplace_back(spendable[k]);
+            spendable.erase(spendable.begin() + k);
+        }
+        if (mtx.vin.empty()) mtx.vin.emplace_back(Txid::FromUint256(uint256{1}), next_root++);
+        for (CTxIn& txin : mtx.vin) txin.scriptSig = CScript() << OP_1;
+        mtx.vout.resize(1 + m_rng.randrange(3));
+        for (size_t o{0}; o < mtx.vout.size(); ++o) {
+            mtx.vout[o].scriptPubKey = CScript() << OP_1 << OP_EQUAL;
+            mtx.vout[o].nValue = 1 + i;
+        }
+        const CTransactionRef tx{MakeTransactionRef(mtx)};
+        // Few distinct fees, so that many chunks have equal feerates.
+        TryAddToMempool(pool, TestMemPoolEntryHelper{}.Fee(1000 * (1 + m_rng.randrange(3))).FromTx(tx));
+        // Transactions rejected by the cluster limits are not added.
+        if (pool.exists(tx->GetHash())) {
+            added.push_back(tx);
+            for (uint32_t o{0}; o < tx->vout.size(); ++o) spendable.emplace_back(tx->GetHash(), o);
+        }
+
+        if (i % 25 == 0 && !added.empty()) {
+            check_order();
+            // Change the order by prioritising, and by removing a transaction and its descendants.
+            pool.PrioritiseTransaction(added[m_rng.randrange(added.size())]->GetHash(), static_cast<int64_t>(m_rng.randrange(5000)) - 2500);
+            check_order();
+            const CTransactionRef& victim{added[m_rng.randrange(added.size())]};
+            pool.removeRecursive(*victim, MemPoolRemovalReason::EXPIRY);
+            check_order();
+        }
+    }
+    check_order();
+    BOOST_CHECK_GT(pool.size(), 0U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
