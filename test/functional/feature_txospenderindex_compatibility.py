@@ -64,6 +64,11 @@ class TxoSpenderIndexCompatibilityTest(BitcoinTestFramework):
         self.stop_nodes()
         self.cleanup_folder(node.chain_path)
         shutil.copytree(legacy_node.chain_path, node.chain_path)
+        self.log.info("Ensure that prune mode rejects a legacy txospenderindex")
+        node.assert_start_raises_init_error(
+            extra_args=["-prune=1", "-txospenderindex"],
+            expected_msg="Error: Prune mode is incompatible with a txospenderindex that still contains legacy entries. Stop the node, delete the txospenderindex directory, and restart to rebuild the index.",
+        )
         with node.assert_debug_log(expected_msgs=["txospenderindex contains entries in the legacy format"]):
             self.start_node(0)
         self.wait_synced(node)
@@ -94,6 +99,16 @@ class TxoSpenderIndexCompatibilityTest(BitcoinTestFramework):
         self.wait_synced(legacy_node)
         self.assert_unspent(legacy_node, tx1)
         self.assert_unspent(legacy_node, tx2)
+
+        self.log.info("Check rebuild advice after pruning with the legacy txospenderindex disabled")
+        self.start_node(0, extra_args=["-fastprune", "-prune=1", "-txospenderindex=0"])
+        self.generate(node, 600, sync_fun=self.no_op)
+        node.pruneblockchain(node.getblockcount())
+        self.stop_node(0)
+        node.assert_start_raises_init_error(
+            extra_args=["-prune=1", "-txospenderindex"],
+            expected_msg="Error: Prune mode is incompatible with a txospenderindex that still contains legacy entries. Restart with -reindex to rebuild the index and redownload the blockchain.",
+        )
 
 
 if __name__ == '__main__':

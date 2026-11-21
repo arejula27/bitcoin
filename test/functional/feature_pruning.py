@@ -129,6 +129,11 @@ class PruneTest(BitcoinTestFramework):
                          f'{os.linesep}Error: A fatal internal error occurred, see debug.log for details: Failed to start indexes, shutting down…',
             extra_args=['-prune=550', '-txindex'],
         )
+        self.nodes[2].assert_start_raises_init_error(
+            expected_msg='Error: txospenderindex best block of the index goes beyond pruned data. Please disable the index or reindex (which will download the whole blockchain again)'
+                         f'{os.linesep}Error: A fatal internal error occurred, see debug.log for details: Failed to start indexes, shutting down…',
+            extra_args=['-prune=550', '-txospenderindex'],
+        )
         self.nodes[0].assert_start_raises_init_error(
             expected_msg='Error: Prune mode is incompatible with -reindex-chainstate. Use full -reindex instead.',
             extra_args=['-prune=550', '-reindex-chainstate'],
@@ -473,7 +478,7 @@ class PruneTest(BitcoinTestFramework):
         self.sync_blocks([self.nodes[0], self.nodes[5]], wait=5, timeout=300)
 
         self.log.info("Test prune with new indexes")
-        self.restart_node(0, extra_args=["-prune=550", "-blockfilterindex=1", "-txindex=1"])
+        self.restart_node(0, extra_args=["-prune=550", "-blockfilterindex=1", "-txindex=1", "-txospenderindex=1"])
         node = self.nodes[0]
         self.wait_until(lambda: node.getindexinfo()["basic block filter index"]["best_block_height"] >= 10, timeout=300)
 

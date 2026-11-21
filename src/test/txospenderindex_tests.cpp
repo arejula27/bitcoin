@@ -173,6 +173,7 @@ BOOST_FIXTURE_TEST_CASE(txospenderindex_collision_scan_path, SpendSetup)
     const uint256 block_hash{CreateAndProcessBlock({spend_mtx}, coinbase_script).GetHash()};
 
     TxoSpenderIndex index(interfaces::MakeChain(m_node), /*n_cache_size=*/1_MiB, /*f_memory=*/false);
+    BOOST_CHECK(index.AllowPrune());
     BOOST_REQUIRE(index.Init());
     index.Sync();
 
@@ -384,6 +385,7 @@ BOOST_FIXTURE_TEST_CASE(txospenderindex_legacy_fallback, SpendSetup)
     }
 
     TxoSpenderIndex index(interfaces::MakeChain(m_node), /*n_cache_size=*/1_MiB, /*f_memory=*/false);
+    BOOST_CHECK(!index.AllowPrune());
     BOOST_REQUIRE(index.Init());
     index.Sync();
 

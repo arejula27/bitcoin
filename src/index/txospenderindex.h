@@ -44,7 +44,6 @@ private:
     const SipHasher13UJ m_hasher;
     /// Hasher of the legacy entries. Only set if the database contains any.
     std::optional<PresaltedSipHasher> m_legacy_hasher;
-    bool AllowPrune() const override { return false; }
     util::Expected<CTransactionRef, std::string> ReadTransaction(const FlatFilePos& pos) const;
     util::Expected<TxFound, std::string> ReadLegacyTransaction(const CDiskTxPos& pos) const;
     /// Look up a spender among the legacy entries.
@@ -57,6 +56,9 @@ protected:
 
 public:
     explicit TxoSpenderIndex(std::unique_ptr<interfaces::Chain> chain, size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
+
+    /// Pruning is allowed unless the database still contains legacy entries.
+    bool AllowPrune() const override { return !m_has_legacy; }
 
     /**
      * Search the index for a transaction that spends the given outpoint.

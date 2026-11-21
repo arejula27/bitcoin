@@ -535,7 +535,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-prevoutfetchthreads=<n>", strprintf("Set the number of threads used to prefetch block input prevouts from the chainstate database (0 disables, up to %d, default: %d). Negative values are rejected.", MAX_PREVOUTFETCH_THREADS, DEFAULT_PREVOUTFETCH_THREADS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-persistmempool", strprintf("Whether to save the mempool on shutdown and load on restart (default: %u)", DEFAULT_PERSIST_MEMPOOL), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-pid=<file>", strprintf("Specify pid file. Relative paths will be prefixed by a net-specific datadir location. (default: %s)", BITCOIN_PID_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    argsman.AddArg("-prune=<n>", strprintf("Reduce storage requirements by enabling pruning (deleting) of old blocks. This allows the pruneblockchain RPC to be called to delete specific blocks and enables automatic pruning of old blocks if a target size in MiB is provided. This mode is incompatible with -txospenderindex. "
+    argsman.AddArg("-prune=<n>", strprintf("Reduce storage requirements by enabling pruning (deleting) of old blocks. This allows the pruneblockchain RPC to be called to delete specific blocks and enables automatic pruning of old blocks if a target size in MiB is provided. "
             "Warning: Reverting this setting requires re-downloading the entire blockchain. Wallets and indexes should be loaded at startup and kept active while pruning is enabled so they stay synchronized before old block data is deleted; wallets or indexes that fall behind pruned data may require a reindex. "
             "(default: 0 = disable pruning blocks, 1 = allow manual pruning via RPC, >=%u = automatically prune block files to stay under the specified target size in MiB)", MIN_DISK_SPACE_FOR_BLOCK_FILES / 1_MiB), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-reindex", "If enabled, wipe chain state and block index, and rebuild them from blk*.dat files on disk. Also wipe and rebuild other optional indexes that are active. If an assumeutxo snapshot was loaded, its chainstate will be wiped as well. The snapshot can then be reloaded via RPC.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -1026,8 +1026,6 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     }
 
     if (args.GetIntArg("-prune", 0)) {
-        if (args.GetBoolArg("-txospenderindex", DEFAULT_TXOSPENDERINDEX))
-            return InitError(_("Prune mode is incompatible with -txospenderindex."));
         if (args.GetBoolArg("-reindex-chainstate", false)) {
             return InitError(_("Prune mode is incompatible with -reindex-chainstate. Use full -reindex instead."));
         }
@@ -2018,6 +2016,12 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
 
     if (args.GetBoolArg("-txospenderindex", DEFAULT_TXOSPENDERINDEX)) {
         g_txospenderindex = std::make_unique<TxoSpenderIndex>(interfaces::MakeChain(node), index_cache_sizes.txospender_index, false, do_reindex);
+        if (chainman.m_blockman.IsPruneMode() && !g_txospenderindex->AllowPrune()) {
+            if (chainman.m_blockman.m_have_pruned) {
+                return InitError(_("Prune mode is incompatible with a txospenderindex that still contains legacy entries. Restart with -reindex to rebuild the index and redownload the blockchain."));
+            }
+            return InitError(_("Prune mode is incompatible with a txospenderindex that still contains legacy entries. Stop the node, delete the txospenderindex directory, and restart to rebuild the index."));
+        }
         node.indexes.emplace_back(g_txospenderindex.get());
     }
 

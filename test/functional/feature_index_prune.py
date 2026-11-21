@@ -32,7 +32,7 @@ class FeatureIndexPruneTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 4
         self.extra_args = [
-            ["-fastprune", "-prune=1", "-blockfilterindex=1", "-txindex=1"],
+            ["-fastprune", "-prune=1", "-blockfilterindex=1", "-txindex=1", "-txospenderindex=1"],
             ["-fastprune", "-prune=1", "-coinstatsindex=1"],
             ["-fastprune", "-prune=1", "-blockfilterindex=1", "-coinstatsindex=1"],
             [],
@@ -167,11 +167,12 @@ class FeatureIndexPruneTest(BitcoinTestFramework):
             self.stop_node(i)
             node.assert_start_raises_init_error(extra_args=self.extra_args[i], expected_msg=msg+end_msg)
 
-        self.log.info("txindex can resume after fetching missing block bodies without undo data")
+        self.log.info("txindex and txospenderindex can resume after fetching missing block bodies without undo data")
         txindex_node = self.nodes[0]
-        self.start_node(0, extra_args=["-prune=1", "-fastprune", "-txindex=1"])
+        self.start_node(0, extra_args=["-prune=1", "-fastprune", "-txindex=1", "-txospenderindex=1"])
         refetched_block = txindex_node.getblock(txindex_node.getblockhash(last_indexed_height + 1))
         assert_equal(txindex_node.getrawtransaction(refetched_block["tx"][0], 1)["blockhash"], refetched_block["hash"])
+        self.wait_until(lambda: txindex_node.getindexinfo("txospenderindex")["txospenderindex"]["synced"])
 
         self.log.info("make sure the nodes start again with the indices and an additional -reindex arg")
         for i in range(3):
