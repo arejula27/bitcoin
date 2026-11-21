@@ -994,6 +994,11 @@ static RPCMethod gettxspendingprevout()
                     {RPCResult::Type::STR_HEX, "spendingtxid", /*optional=*/true, "the transaction id of the mempool transaction spending this output (omitted if unspent)"},
                     {RPCResult::Type::STR_HEX, "spendingtx", /*optional=*/true, "the transaction spending this output (only if return_spending_tx is set, omitted if unspent)"},
                     {RPCResult::Type::STR_HEX, "blockhash", /*optional=*/true, "the hash of the spending block (omitted if unspent or the spending tx is not confirmed)"},
+                    {RPCResult::Type::ARR, "pruned_block_hashes", /*optional=*/true, "if no spend was found, the hashes of pruned blocks that may contain it (omitted if none). "
+                        "These blocks are not guaranteed to contain a spend. Use getblockfrompeer to fetch them, then retry the lookup.",
+                    {
+                        {RPCResult::Type::STR_HEX, "", "the block hash"},
+                    }},
                 }},
             }
         },
@@ -1090,6 +1095,12 @@ static RPCMethod gettxspendingprevout()
                 if (const auto* found{spender->GetFound()}) {
                     UniValue o{make_output(prevout, found->tx.get())};
                     o.pushKV("blockhash", found->block_hash.GetHex());
+                    results[prevout.request_index] = std::move(o);
+                } else if (const auto& pruned_block_hashes{spender->GetMiss()->pruned_block_hashes}; !pruned_block_hashes.empty()) {
+                    UniValue hashes{UniValue::VARR};
+                    for (const auto& hash : pruned_block_hashes) hashes.push_back(hash.GetHex());
+                    UniValue o{make_output(prevout)};
+                    o.pushKV("pruned_block_hashes", std::move(hashes));
                     results[prevout.request_index] = std::move(o);
                 } else {
                     // Only return the input outpoint itself, which indicates it is unspent.
