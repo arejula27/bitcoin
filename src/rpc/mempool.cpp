@@ -18,6 +18,7 @@
 #include <node/mempool_persist.h>
 #include <node/mempool_persist_args.h>
 #include <node/transaction.h>
+#include <node/tx_lookup_result.h>
 #include <node/txorphanage.h>
 #include <node/types.h>
 #include <policy/feerate.h>
@@ -1086,9 +1087,9 @@ static RPCMethod gettxspendingprevout()
                     throw JSONRPCError(RPC_MISC_ERROR, spender.error());
                 }
 
-                if (const auto& spender_opt{spender.value()}) {
-                    UniValue o{make_output(prevout, spender_opt->tx.get())};
-                    o.pushKV("blockhash", spender_opt->block_hash.GetHex());
+                if (const auto* found{spender->GetFound()}) {
+                    UniValue o{make_output(prevout, found->tx.get())};
+                    o.pushKV("blockhash", found->block_hash.GetHex());
                     results[prevout.request_index] = std::move(o);
                 } else {
                     // Only return the input outpoint itself, which indicates it is unspent.

@@ -7,6 +7,7 @@
 
 #include <crypto/siphash.h>
 #include <index/base.h>
+#include <node/tx_lookup_result.h>
 #include <primitives/transaction.h>
 #include <uint256.h>
 #include <util/expected.h>
@@ -27,11 +28,6 @@ class Chain;
 
 inline constexpr bool DEFAULT_TXOSPENDERINDEX{false};
 
-struct TxoSpender {
-    CTransactionRef tx;
-    uint256 block_hash;
-};
-
 /**
  * TxoSpenderIndex is used to look up which transaction spent a given output.
  * The index is written to a LevelDB database and, for each input of each transaction in a block,
@@ -50,9 +46,9 @@ private:
     std::optional<PresaltedSipHasher> m_legacy_hasher;
     bool AllowPrune() const override { return false; }
     util::Expected<CTransactionRef, std::string> ReadTransaction(const FlatFilePos& pos) const;
-    util::Expected<TxoSpender, std::string> ReadLegacyTransaction(const CDiskTxPos& pos) const;
+    util::Expected<TxFound, std::string> ReadLegacyTransaction(const CDiskTxPos& pos) const;
     /// Look up a spender among the legacy entries.
-    util::Expected<std::optional<TxoSpender>, std::string> FindLegacySpender(const COutPoint& txo) const;
+    util::Expected<TxLookupResult, std::string> FindLegacySpender(const COutPoint& txo) const;
 
 protected:
     bool CustomAppend(const interfaces::BlockInfo& block) override;
@@ -67,12 +63,13 @@ public:
      *
      * @param[in] txo  The outpoint to search for.
      *
-     * @return  std::nullopt               if the outpoint has not been spent in the active chain.
-     *          std::optional{TxoSpender}  if the output has been spent in the active chain. Contains the spending
-     *                                     transaction and the block it was confirmed in.
-     *          util::Unexpected{error}    if something unexpected happened (i.e. disk or deserialization error).
+     * @return  TxFound                  if the output has been spent in the active chain. Contains the spending
+     *                                   transaction and the block it was confirmed in.
+     *          TxMiss                   if no spend was found in the active chain. Contains the hashes of active
+     *                                   chain blocks that may contain the spend but were pruned, if any.
+     *          util::Unexpected{error}  if something unexpected happened (i.e. disk or deserialization error).
      */
-    util::Expected<std::optional<TxoSpender>, std::string> FindSpender(const COutPoint& txo) const;
+    util::Expected<TxLookupResult, std::string> FindSpender(const COutPoint& txo) const;
 };
 
 /// The global txo spender index. May be null.

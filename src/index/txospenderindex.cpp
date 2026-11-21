@@ -16,6 +16,7 @@
 #include <interfaces/chain.h>
 #include <logging.h>
 #include <node/blockstorage.h>
+#include <node/tx_lookup_result.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <serialize.h>
@@ -34,6 +35,7 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -106,14 +108,14 @@ util::Expected<CTransactionRef, std::string> TxoSpenderIndex::ReadTransaction(co
     }
 }
 
-util::Expected<TxoSpender, std::string> TxoSpenderIndex::ReadLegacyTransaction(const CDiskTxPos& tx_pos) const
+util::Expected<TxFound, std::string> TxoSpenderIndex::ReadLegacyTransaction(const CDiskTxPos& tx_pos) const
 {
     AutoFile file{m_chainstate->m_blockman.OpenBlockFile(tx_pos, /*fReadOnly=*/true)};
     if (file.IsNull()) {
         return util::Unexpected("cannot open block");
     }
     CBlockHeader header;
-    TxoSpender spender;
+    TxFound spender;
     try {
         file >> header;
         file.seek(tx_pos.nTxOffset, SEEK_CUR);
@@ -130,11 +132,12 @@ static bool Spends(const CTransaction& tx, const COutPoint& txo)
     return std::ranges::any_of(tx.vin, [&](const CTxIn& input) { return input.prevout == txo; });
 }
 
-util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindSpender(const COutPoint& txo) const
+util::Expected<TxLookupResult, std::string> TxoSpenderIndex::FindSpender(const COutPoint& txo) const
 {
     const auto prefix{txospenderindex::CreateKeyPrefix(m_hasher, txo)};
     std::unique_ptr<CDBIterator> it{m_db->NewIterator()};
     txospenderindex::DBKey key{prefix, {}};
+    std::set<uint256> pruned_block_hashes;
 
     // Find all keys that start with the outpoint hash prefix, load the transaction at the location specified in the
     // key if its block is in the active chain, and return it if it does spend the provided outpoint.
@@ -156,6 +159,10 @@ util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindSpen
             // Entries of disconnected blocks are kept, so only spends in the active chain count.
             if (!m_chainstate->m_chain.Contains(*block_index)) continue;
             if (!(block_index->nStatus & BLOCK_HAVE_DATA)) {
+                if (m_chainstate->m_blockman.IsBlockPruned(*block_index)) {
+                    pruned_block_hashes.insert(block_hash);
+                    continue;
+                }
                 return util::Unexpected{strprintf("Block %s with a candidate spending tx for outpoint %s:%d is not available.",
                                                   block_hash.ToString(), txo.hash.GetHex(), txo.n)};
             }
@@ -163,19 +170,26 @@ util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindSpen
         }
         const auto tx{ReadTransaction(tx_pos)};
         if (!tx) {
+            // The block may have been pruned after the check above.
+            LOCK(cs_main);
+            const CBlockIndex* block_index{m_chainstate->m_blockman.LookupBlockIndex(block_hash)};
+            if (block_index && m_chainstate->m_blockman.IsBlockPruned(*block_index)) {
+                if (m_chainstate->m_chain.Contains(*block_index)) pruned_block_hashes.insert(block_hash);
+                continue;
+            }
             LogError("Deserialize or I/O error - %s", tx.error());
             return util::Unexpected{strprintf("IO error finding spending tx for outpoint %s:%d.", txo.hash.GetHex(), txo.n)};
         }
-        if (Spends(**tx, txo)) return std::optional{TxoSpender{*tx, block_hash}};
+        if (Spends(**tx, txo)) return TxLookupResult{TxFound{*tx, block_hash}};
     }
     // Fall back to legacy if no hashed entry matched.
     if (m_has_legacy) return FindLegacySpender(txo);
-    return std::optional<TxoSpender>{};
+    return TxLookupResult{TxMiss{std::move(pruned_block_hashes)}};
 }
 
-util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindLegacySpender(const COutPoint& txo) const
+util::Expected<TxLookupResult, std::string> TxoSpenderIndex::FindLegacySpender(const COutPoint& txo) const
 {
-    if (!m_legacy_hasher) return std::optional<TxoSpender>{};
+    if (!m_legacy_hasher) return TxLookupResult{TxMiss{}};
     const uint64_t prefix{txospenderindex::CreateLegacyKeyPrefix(*m_legacy_hasher, txo)};
     std::unique_ptr<CDBIterator> it(m_db->NewIterator());
     txospenderindex::LegacyDBKey key{prefix, {}};
@@ -186,13 +200,13 @@ util::Expected<std::optional<TxoSpender>, std::string> TxoSpenderIndex::FindLega
             // As for hashed entries, only spends in the active chain count.
             LOCK(cs_main);
             const CBlockIndex* block_index{m_chainstate->m_blockman.LookupBlockIndex(spender->block_hash)};
-            if (block_index && m_chainstate->m_chain.Contains(*block_index)) return std::optional{*spender};
+            if (block_index && m_chainstate->m_chain.Contains(*block_index)) return TxLookupResult{*spender};
         } else {
             LogError("Deserialize or I/O error - %s", spender.error());
             return util::Unexpected{strprintf("IO error finding spending tx for outpoint %s:%d.", txo.hash.GetHex(), txo.n)};
         }
     }
-    return std::optional<TxoSpender>{};
+    return TxLookupResult{TxMiss{}};
 }
 
 BaseIndex::DB& TxoSpenderIndex::GetDB() const { return *m_db; }

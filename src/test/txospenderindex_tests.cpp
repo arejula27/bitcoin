@@ -11,6 +11,7 @@
 #include <index/disktxpos.h>
 #include <index/txospenderindex.h>
 #include <index/txospenderindex_key.h>
+#include <node/tx_lookup_result.h>
 #include <streams.h>
 #include <test/util/common.h>
 #include <test/util/setup_common.h>
@@ -53,11 +54,13 @@ std::vector<block_seq::BlockTxPosition> BucketPositions(CDBWrapper& db, block_se
 }
 
 //! Return the spender of an outpoint and the block it is in, or nullopt if unspent.
-std::optional<TxoSpender> LookupSpender(const TxoSpenderIndex& index, const COutPoint& outpoint)
+std::optional<TxFound> LookupSpender(const TxoSpenderIndex& index, const COutPoint& outpoint)
 {
     const auto result{index.FindSpender(outpoint)};
     BOOST_REQUIRE(result.has_value());
-    return *result;
+    if (const auto* found{result->GetFound()}) return *found;
+    BOOST_CHECK(result->GetMiss()->pruned_block_hashes.empty());
+    return std::nullopt;
 }
 
 void InvalidateBlock(ChainstateManager& chainman, const uint256& block_hash)
@@ -115,18 +118,17 @@ BOOST_FIXTURE_TEST_CASE(txospenderindex_initial_sync, TestChain100Setup)
 
     // Transaction should not be found in the index before it is synced.
     for (const auto& outpoint : spent) {
-        BOOST_CHECK(!txospenderindex.FindSpender(outpoint).value());
+        BOOST_CHECK(!LookupSpender(txospenderindex, outpoint));
     }
 
     txospenderindex.Sync();
     BOOST_CHECK_EQUAL(txospenderindex.GetSummary().best_block_hash, tip_hash);
 
     for (size_t i = 0; i < spent.size(); i++) {
-        const auto tx_spender{txospenderindex.FindSpender(spent[i])};
-        BOOST_REQUIRE(tx_spender.has_value());
-        BOOST_REQUIRE(tx_spender->has_value());
-        BOOST_CHECK_EQUAL((*tx_spender)->tx->GetHash(), spender[i].GetHash());
-        BOOST_CHECK_EQUAL((*tx_spender)->block_hash, tip_hash);
+        const auto tx_spender{LookupSpender(txospenderindex, spent[i])};
+        BOOST_REQUIRE(tx_spender);
+        BOOST_CHECK_EQUAL(tx_spender->tx->GetHash(), spender[i].GetHash());
+        BOOST_CHECK_EQUAL(tx_spender->block_hash, tip_hash);
     }
 
     StopIndex(txospenderindex, m_node);
@@ -236,6 +238,51 @@ BOOST_FIXTURE_TEST_CASE(txospenderindex_unreadable_candidate, SpendSetup)
     // So is a block sequence without a block hash, which means a corrupt index.
     db.Erase(txospenderindex::BlockSeqKey{unreadable_seq});
     BOOST_CHECK(!index.FindSpender(spent).has_value());
+
+    StopIndex(index, m_node);
+}
+
+BOOST_FIXTURE_TEST_CASE(txospenderindex_pruned_candidate, SpendSetup)
+{
+    const uint256 block_hash{CreateAndProcessBlock({spend_mtx}, coinbase_script).GetHash()};
+
+    TxoSpenderIndex index(interfaces::MakeChain(m_node), /*n_cache_size=*/1_MiB, /*f_memory=*/true);
+    BOOST_REQUIRE(index.Init());
+    index.Sync();
+
+    CDBWrapper& db{TxoSpenderIndexTest::GetDB(index)};
+    const SipHasher13UJ hasher{ReadHasher(db)};
+    const auto spent_bucket{BucketPositions(db, txospenderindex::CreateKeyPrefix(hasher, spent))};
+    BOOST_REQUIRE_EQUAL(spent_bucket.size(), 1U);
+
+    // A false positive pointing at the same block, under the prefix of an unspent outpoint.
+    const COutPoint unspent{m_coinbase_txns[1]->GetHash(), 0};
+    db.Write(txospenderindex::DBKey{txospenderindex::CreateKeyPrefix(hasher, unspent), spent_bucket.front()}, block_seq::EMPTY_VALUE);
+
+    // Simulate pruning the block that contains the spend.
+    node::BlockManager& blockman{m_node.chainman->m_blockman};
+    CBlockIndex* block_index{WITH_LOCK(cs_main, return blockman.LookupBlockIndex(block_hash))};
+    BOOST_REQUIRE(block_index);
+    WITH_LOCK(cs_main, block_index->nStatus &= ~BLOCK_HAVE_DATA);
+    blockman.m_have_pruned = true;
+
+    // Both lookups report the pruned block instead of an error or unspent,
+    // since the block may contain the spend.
+    for (const auto& outpoint : {spent, unspent}) {
+        const auto result{index.FindSpender(outpoint)};
+        BOOST_REQUIRE(result.has_value());
+        const auto* miss{result->GetMiss()};
+        BOOST_REQUIRE(miss);
+        BOOST_CHECK(miss->pruned_block_hashes == std::set<uint256>{block_hash});
+    }
+    // An outpoint without candidates is still reported as unspent.
+    BOOST_CHECK(!LookupSpender(index, COutPoint{m_coinbase_txns[2]->GetHash(), 0}));
+
+    blockman.m_have_pruned = false;
+    WITH_LOCK(cs_main, block_index->nStatus |= BLOCK_HAVE_DATA);
+    const auto spender{LookupSpender(index, spent)};
+    BOOST_REQUIRE(spender);
+    BOOST_CHECK(spender->tx->GetHash() == spend_txid);
 
     StopIndex(index, m_node);
 }
