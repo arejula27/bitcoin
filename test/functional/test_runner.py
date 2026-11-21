@@ -122,6 +122,7 @@ BASE_SCRIPTS = [
     'p2p_tx_download.py',
     'feature_txindex_compatibility.py',
     'feature_txindex_prune.py',
+    'feature_txospenderindex_prune.py',
     'feature_txospenderindex_compatibility.py',
     'wallet_avoidreuse.py',
     'feature_abortnode.py',

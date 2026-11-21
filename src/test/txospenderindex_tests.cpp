@@ -63,6 +63,26 @@ std::optional<TxFound> LookupSpender(const TxoSpenderIndex& index, const COutPoi
     return std::nullopt;
 }
 
+//! Check that no spender is found, and which pruned blocks may contain it.
+void CheckUnspent(const TxoSpenderIndex& index, const COutPoint& outpoint, const std::set<uint256>& expected_pruned_block_hashes)
+{
+    const auto result{index.FindSpender(outpoint)};
+    BOOST_REQUIRE(result.has_value());
+    const auto* miss{result->GetMiss()};
+    BOOST_REQUIRE(miss);
+    BOOST_CHECK_EQUAL_COLLECTIONS(miss->pruned_block_hashes.begin(), miss->pruned_block_hashes.end(),
+                                  expected_pruned_block_hashes.begin(), expected_pruned_block_hashes.end());
+}
+
+void PruneBlock(ChainstateManager& chainman, const uint256& block_hash)
+{
+    LOCK(cs_main);
+    chainman.m_blockman.m_have_pruned = true;
+    CBlockIndex* block_index{chainman.m_blockman.LookupBlockIndex(block_hash)};
+    BOOST_REQUIRE(block_index);
+    block_index->nStatus &= ~BLOCK_HAVE_DATA;
+}
+
 void InvalidateBlock(ChainstateManager& chainman, const uint256& block_hash)
 {
     CBlockIndex* block_index{WITH_LOCK(cs_main, return chainman.m_blockman.LookupBlockIndex(block_hash))};
@@ -202,6 +222,26 @@ BOOST_FIXTURE_TEST_CASE(txospenderindex_collision_scan_path, SpendSetup)
     BOOST_REQUIRE(spender);
     BOOST_CHECK(spender->tx->GetHash() == spend_txid);
     BOOST_CHECK(spender->block_hash == block_hash);
+
+    // A pruned false positive does not hide the spender in a readable block.
+    // Point it at the block at height 1, which sorts before the spender.
+    const uint256 fake_block_hash{WITH_LOCK(cs_main, return m_node.chainman->ActiveChain()[1]->GetBlockHash())};
+    uint32_t fake_seq;
+    BOOST_REQUIRE(db.Read(txospenderindex::BlockHashKey{fake_block_hash}, fake_seq));
+    const block_seq::BlockTxPosition fake_pos{fake_seq, block_seq::BLOCK_HEADER_SIZE + 1};
+    db.Write(txospenderindex::DBKey{spent_prefix, fake_pos}, block_seq::EMPTY_VALUE);
+    const auto bucket{BucketPositions(db, spent_prefix)};
+    BOOST_REQUIRE_EQUAL(bucket.size(), 3U);
+    BOOST_CHECK(bucket.front() == fake_pos);
+    PruneBlock(*m_node.chainman, fake_block_hash);
+    const auto pruned_fake_spender{LookupSpender(index, spent)};
+    BOOST_REQUIRE(pruned_fake_spender);
+    BOOST_CHECK(pruned_fake_spender->block_hash == block_hash);
+
+    // Once the spender's block is pruned too, both pruned blocks are returned
+    // instead of reporting the outpoint as unspent.
+    PruneBlock(*m_node.chainman, block_hash);
+    CheckUnspent(index, spent, {fake_block_hash, block_hash});
 
     StopIndex(index, m_node);
 }
@@ -352,6 +392,13 @@ BOOST_FIXTURE_TEST_CASE(txospenderindex_reorg_keeps_stale_entries, SpendSetup)
     const auto reorg_bucket{BucketPositions(db, prefix)};
     BOOST_REQUIRE_EQUAL(reorg_bucket.size(), 2U);
     BOOST_CHECK(reorg_bucket.front() == original_bucket.front());
+
+    // A readable copy in a block outside the active chain does not hide a
+    // pruned active chain candidate, and is not returned once pruned.
+    PruneBlock(chainman, stale_block_hash);
+    CheckUnspent(index, spent, {stale_block_hash});
+    PruneBlock(chainman, branch_block_hash);
+    CheckUnspent(index, spent, {stale_block_hash});
 
     StopIndex(index, m_node);
 }
